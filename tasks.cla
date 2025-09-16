@@ -1,0 +1,500 @@
+#include "shared_vars.h"
+#include "driverlib.h"
+#include "device.h"
+#include "board.h"
+
+// não é do controle preditivo
+#define B0 0.000532715f
+#define B1 0.000532715f
+#define B2 0.0f
+#define A1 -1.000000f
+#define A2 0.0f
+
+/*
+#define B0  0.001033f
+#define B1  0.000767f
+#define B2 -0.000266f
+#define A1 -1.521886f
+#define A2  0.521886f
+//#define REF 8.0f
+*/
+
+
+#define norm_ADC  (84.0f)/4095.0F
+#define norm_ADC_il  (8.4f)/4095.0F
+
+#define PWM_TOP 5000U  // deve coincidir com TBPRD do EPWM
+#define UL 0.95f         // upper limit
+#define LL 0.05f         // lower limit
+
+uint16_t duty_cmp;
+
+ float x[3];
+ float y[3];
+ // não é do controle preditivo
+
+
+
+
+
+//                  Constantes pré-calculadas para transformada de clark
+//-------------------------------------------------------------------------------------------------------
+
+#define DOIS_DIV_3 0.6666667f     // 2/3
+#define TRES_DIV_2 1.5f           // 3/2
+#define HALF 0.5f
+#define SQRT3_BY_2 0.8660254f             // sqrt(3)/2
+
+// Função reutilizável de Clarke
+typedef struct {
+    float alfa;
+    float beta;
+} ClarkeOutput;
+
+ClarkeOutput ClarkeTransform(float a, float b, float c)
+{
+    ClarkeOutput out;
+    out.alfa = DOIS_DIV_3 * (a - HALF * b - HALF * c);
+    out.beta = DOIS_DIV_3 * (SQRT3_BY_2 * b - SQRT3_BY_2 * c);
+    return out;
+}
+
+//-------------------------------------------------------------------------------------------------------------
+//variaveis que seram lidas trocar por leitura adc depois
+//--------------------------------------------------------
+float va_pac, vb_pac, vc_pac;
+float i1_a,i1_b,i1_c;
+float va_cap,vb_cap,vc_cap;
+float i2_a,i2_b,i2_c;
+float Vdc;
+
+//----------------------------------------------------------
+
+float valfa_pac, vbeta_pac, i1_alfa, i1_beta, valfa_cap, vbeta_cap, i2_alfa,  i2_beta;
+float Vg_ab[6], i1_ab[4], i2_ab[4], vcap_ab[4];
+float corrente_VR[2];
+int linha_op[2], passado;
+float g_op, D, E, inv_D, inv_E, P_ativa, Q_reativa;
+float Vg_ab_k1[2], Vg_ab_k2[2];
+float Vg_ab_filtrado[6], Vg_ab_q_filtrado[4], Vg_ab_filtrado_neg[2], Vg_ab_filtrado_pos[2];
+float i2_ref_alfa, i2_ref_alfa_pos, i2_ref_alfa_neg;
+float i2_ref_beta, i2_ref_beta_pos, i2_ref_beta_neg;
+float i2_ref_ab[6], i2_ref_ab_k2[2], i2_ref_ab_virtual[6], i2_ref_ab_virtual_k2[4];
+float vcap_ref_ab[6];
+
+//RV=6.8184;
+#define INV_RV 0.147f  //  (1/RV)
+#define INV_2_RV 0.0733f      //  (1/2*RV)
+#define LIMITAR_ZERO 0.00000000001f
+#define LIMITADOR_UM 1.0f
+// valores definidos para o filtro SOGI com k=1
+#define a11 0.00471238898f
+#define a22 0.00471238898f
+#define b1  1.990531226413290f
+#define b2  0.990619634277416f
+#define a1  0.004690182861292f
+#define a2  0.004690182861292f
+//Ts= 0.000025;
+#define INV_TS  40000.0f  // 1/Ts
+#define Lc 0.00584f
+#define Lg 0.00106f
+#define rc 0.2f
+#define rg 0.17f
+#define C 0.0000114f
+#define ZERO 0.0f
+
+
+
+void extrapolar_k1(float V[6], float Vk1[2]);
+void extrapolar_k2(float V[6], float Vk2[2]);
+float calcular_v_filtrado(float *entrada, float *saida_filtrada, int entrada_atual, int entrada_ant, int saida_ant_1, int saida_ant_2);
+float calcular_q_filtrado(float *entrada_filtrada, float *saida_q_filtrada, int entrada_atual, int entrada_ant, int saida_ant);
+
+
+__interrupt void Cla1Task1(void)
+{
+
+   float derivada_i2[2];
+
+
+
+     passado = linha_op[0];
+     linha_op[1] = linha_op[0];
+     linha_op[0]=1000;
+     g_op=1000000000000000.0f;
+
+//----------------------Transformadas CLARK--------------------------------------------------------------
+
+    ClarkeOutput v_pac, i1, v_cap, i2;
+
+
+    v_pac = ClarkeTransform(va_pac, vb_pac, vc_pac);
+    valfa_pac = v_pac.alfa;
+    vbeta_pac = v_pac.beta;
+
+    i1 = ClarkeTransform(i1_a, i1_b, i1_c);
+    i1_alfa = i1.alfa;
+    i1_beta = i1.beta;
+
+    v_cap = ClarkeTransform(va_cap, vb_cap, vc_cap);
+    valfa_cap = v_cap.alfa;
+    vbeta_cap = v_cap.beta;
+
+    i2 = ClarkeTransform(i2_a, i2_b, i2_c);
+    i2_alfa = i2.alfa;
+    i2_beta = i2.beta;
+
+ //---------------------------------------Redefinindo as variaveis para vetores-------------------------------------------------------------------------
+
+    Vg_ab[4] = Vg_ab[2]; Vg_ab[2] = Vg_ab[0]; Vg_ab[0] = valfa_pac;
+    Vg_ab[5] = Vg_ab[3]; Vg_ab[3] = Vg_ab[1]; Vg_ab[1] =vbeta_pac;
+
+    vcap_ab[2] = vcap_ab[0]; vcap_ab[0] =valfa_cap ;
+    vcap_ab[3] = vcap_ab[1]; vcap_ab[1] =vbeta_cap;
+
+    i1_ab[2] = i1_ab[0]; i1_ab[0] = i1_alfa;
+    i1_ab[3] = i1_ab[1]; i1_ab[1] = i1_beta;
+
+    i2_ab[2] = i2_ab[0]; i2_ab[0] = i2_alfa;
+    i2_ab[3] = i2_ab[1]; i2_ab[1] = i2_beta;
+
+//--------------------------Passo futuro k1 - extrapolação tensão PAC--------------------------------------------------------------
+
+    extrapolar_k1(Vg_ab, Vg_ab_k1);
+    extrapolar_k2(Vg_ab, Vg_ab_k2);
+
+
+// -----------------------------------------Filtro SOGI -----------------------------------------------------------------------
+
+    // Saída v' Sogi
+
+        Vg_ab_filtrado[4] = Vg_ab_filtrado[2];
+        Vg_ab_filtrado[2] = Vg_ab_filtrado[0];
+        Vg_ab_filtrado[0] = calcular_v_filtrado( Vg_ab, Vg_ab_filtrado, 0, 4, 2, 4);
+        //Vg_ab_filtrado[0]=  a1*Vg_ab[0] - a2*Vg_ab[4] + b1*Vg_ab_filtrado[2] - b2*Vg_ab_filtrado[4];
+
+        Vg_ab_filtrado[5] = Vg_ab_filtrado[3];
+        Vg_ab_filtrado[3] = Vg_ab_filtrado[1];
+        Vg_ab_filtrado[1] = calcular_v_filtrado(Vg_ab, Vg_ab_filtrado, 1, 5, 3, 5);
+        //Vg_ab_filtrado[1]=  a1*Vg_ab[1] -  a2*Vg_ab[5] + b1*Vg_ab_filtrado[3] - b2*Vg_ab_filtrado[5];
+
+    // Saída qv' Sogi
+
+        Vg_ab_q_filtrado[2] =Vg_ab_q_filtrado[0];
+        Vg_ab_q_filtrado[0] = calcular_q_filtrado(Vg_ab_filtrado, Vg_ab_q_filtrado, 0, 2, 2);
+        // Vg_ab_q_filtrado[0] = a11*Vg_ab_filtrado[0]+ a22*Vg_ab_filtrado[2] + Vg_ab_q_filtrado[2];
+
+        Vg_ab_q_filtrado[3] =Vg_ab_q_filtrado[1];
+        Vg_ab_q_filtrado[1] = calcular_q_filtrado(Vg_ab_filtrado, Vg_ab_q_filtrado, 1, 3, 3);
+        // Vg_ab_q_filtrado[1] = a11*Vg_ab_filtrado[1]+ a22*Vg_ab_filtrado[3] + Vg_ab_q_filtrado[3];
+
+//-----------------------------------Obter sequencia positiva------------------------------------------------------------------
+
+            Vg_ab_filtrado_pos[0] = HALF*(Vg_ab_filtrado[0] - Vg_ab_q_filtrado[1]);
+            Vg_ab_filtrado_pos[1] = HALF*(Vg_ab_filtrado[1] + Vg_ab_q_filtrado[0]);
+
+            Vg_ab_filtrado_neg[0] = HALF*(Vg_ab_filtrado[0] + Vg_ab_q_filtrado[1]);
+            Vg_ab_filtrado_neg[1] = HALF*(Vg_ab_filtrado[1] - Vg_ab_q_filtrado[0]);
+
+
+            if(Vg_ab_filtrado_pos[0] == ZERO) Vg_ab_filtrado_pos[0] = LIMITAR_ZERO;
+            if( Vg_ab_filtrado_pos[1]== ZERO) Vg_ab_filtrado_pos[1] = LIMITAR_ZERO;
+
+           /*
+            i2_ref_alfa = (2/3.)*((Vg_ab_filtrado_pos[0]*P_ref  + Vg_ab_filtrado_pos[1]*Q_ref )/((Vg_ab_filtrado_pos[0]*Vg_ab_filtrado_pos[0])+(Vg_ab_filtrado_pos[1]*Vg_ab_filtrado_pos[1])));
+            i2_ref_beta = (2/3.)*((Vg_ab_filtrado_pos[1]*P_ref  - Vg_ab_filtrado_pos[0]*Q_ref )/((Vg_ab_filtrado_pos[0]*Vg_ab_filtrado_pos[0])+(Vg_ab_filtrado_pos[1]*Vg_ab_filtrado_pos[1])));
+
+            i2_ref_ab[4] =  i2_ref_ab[2];
+            i2_ref_ab[2] =  i2_ref_ab[0];
+            i2_ref_ab[0] =  i2_ref_alfa;
+
+            i2_ref_ab[5] =  i2_ref_ab[3];
+            i2_ref_ab[3] =  i2_ref_ab[1];
+            i2_ref_ab[1] =  i2_ref_beta;
+
+            //referencia utilizada para função custo...referencia real medida
+
+            i2_ref_ab_k2[0] = 6*i2_ref_ab[0] - 8*i2_ref_ab[2] +3*i2_ref_ab[4] ;
+            i2_ref_ab_k2[1] = 6*i2_ref_ab[1] - 8*i2_ref_ab[3] +3*i2_ref_ab[5] ;
+
+ */
+
+
+            float Vg_pos_0_sq = Vg_ab_filtrado_pos[0] * Vg_ab_filtrado_pos[0];
+            float Vg_pos_1_sq = Vg_ab_filtrado_pos[1] * Vg_ab_filtrado_pos[1];
+            float Vg_neg_0_sq = Vg_ab_filtrado_neg[0] * Vg_ab_filtrado_neg[0];
+            float Vg_neg_1_sq = Vg_ab_filtrado_neg[1] * Vg_ab_filtrado_neg[1];
+
+            D = (Vg_pos_0_sq + Vg_pos_1_sq) - K * (Vg_neg_0_sq + Vg_neg_1_sq);
+            E = (Vg_pos_0_sq + Vg_pos_1_sq) + K * (Vg_neg_0_sq + Vg_neg_1_sq);
+
+        //    D = ((Vg_ab_filtrado_pos[0]*Vg_ab_filtrado_pos[0])+(Vg_ab_filtrado_pos[1]*Vg_ab_filtrado_pos[1]))-K*((Vg_ab_filtrado_neg[0]*Vg_ab_filtrado_neg[0])+(Vg_ab_filtrado_neg[1]*Vg_ab_filtrado_neg[1]));
+
+        //    E = ((Vg_ab_filtrado_pos[0]*Vg_ab_filtrado_pos[0])+(Vg_ab_filtrado_pos[1]*Vg_ab_filtrado_pos[1]))+K*((Vg_ab_filtrado_neg[0]*Vg_ab_filtrado_neg[0])+(Vg_ab_filtrado_neg[1]*Vg_ab_filtrado_neg[1]));
+
+            // Proteger contra divisão por zero
+            if (D == ZERO) D = LIMITAR_ZERO;
+            if (E == ZERO) E = LIMITAR_ZERO;
+
+            // Fazer só uma divisão para cada
+            inv_D = 1.0f / D;
+            inv_E = 1.0f / E;
+
+
+            i2_ref_alfa_pos = DOIS_DIV_3*(((Vg_ab_filtrado_pos[0]*P_ref)*inv_D)  + ((Vg_ab_filtrado_pos[1]*Q_ref)*inv_E));
+            i2_ref_beta_pos =  DOIS_DIV_3*(((Vg_ab_filtrado_pos[1]*P_ref)*inv_D)  - ((Vg_ab_filtrado_pos[0]*Q_ref)*inv_E));
+
+            i2_ref_alfa_neg = DOIS_DIV_3*((-K*((Vg_ab_filtrado_neg[0]*P_ref)*inv_D))  + (K*((Vg_ab_filtrado_neg[1]*Q_ref)*inv_E)));
+            i2_ref_beta_neg =  DOIS_DIV_3*((-K*((Vg_ab_filtrado_neg[1]*P_ref)*inv_D))  -(K*((Vg_ab_filtrado_neg[0]*Q_ref)*inv_E)));
+
+            i2_ref_alfa =i2_ref_alfa_pos +i2_ref_alfa_neg ;
+            i2_ref_beta = i2_ref_beta_pos+i2_ref_beta_neg;
+
+            i2_ref_ab[4] =  i2_ref_ab[2];
+            i2_ref_ab[2] =  i2_ref_ab[0];
+            i2_ref_ab[0] =  i2_ref_alfa;
+
+            i2_ref_ab[5] =  i2_ref_ab[3];
+            i2_ref_ab[3] =  i2_ref_ab[1];
+            i2_ref_ab[1] =  i2_ref_beta;
+
+//--------------------------- Extrapolação da corrente de referencia i2-------------------------------------------
+            extrapolar_k2(i2_ref_ab, i2_ref_ab_k2);
+
+//-----------------------------corrente virtual -----------------------------------------------------------------------
+
+//foi realizado uma media entre a tensao medida no capacitor e tensao referencia capacitor
+
+            i2_ref_ab_virtual[4]= i2_ref_ab_virtual[2];
+            i2_ref_ab_virtual[2]= i2_ref_ab_virtual[0];
+            i2_ref_ab_virtual[0]= i2_ref_alfa - (1.55f*vcap_ref_ab[0] + 0.45f*vcap_ab[0])*INV_2_RV;
+
+            i2_ref_ab_virtual[5]= i2_ref_ab_virtual[3];
+            i2_ref_ab_virtual[3]= i2_ref_ab_virtual[1];
+            i2_ref_ab_virtual[1]= i2_ref_beta - (1.55f*vcap_ref_ab[1] + 0.45f*vcap_ab[1])*INV_2_RV;
+
+
+            i2_ref_ab_virtual_k2[3]= i2_ref_ab_virtual_k2[1];
+            i2_ref_ab_virtual_k2[2]= i2_ref_ab_virtual_k2[0];
+            extrapolar_k2(i2_ref_ab_virtual, i2_ref_ab_virtual_k2);
+
+//------------------------------------------Potencia ativa e reativa do sistema -----------------------------------------
+
+            P_ativa= TRES_DIV_2*(Vg_ab[0]*i2_ab[0]  + Vg_ab[1]*i2_ab[1] );
+
+            Q_reativa = TRES_DIV_2*(Vg_ab[1]*i2_ab[0] - Vg_ab[0]*i2_ab[1]) ;
+
+ //---------------------------------------Gerando Ref - Vcap ---- ---------------------------------------------------
+/*
+            derivada_i2[0] =( i2_ref_ab_virtual[0]- i2_ref_ab_virtual[2])*INV_TS;
+            derivada_i2[1] =( i2_ref_ab_virtual[1]- i2_ref_ab_virtual[3])*INV_TS;
+
+
+
+
+  //  limitador=1;    //Limitando a derivada para remover picos na transição
+
+            derivada_i2[0] = (derivada_i2[0] > LIMITADOR_UM)  ?  LIMITADOR_UM : derivada_i2[0];
+
+            derivada_i2[0] = (derivada_i2[0] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[0];
+            derivada_i2[1] = (derivada_i2[1] > LIMITADOR_UM)  ?  LIMITADOR_UM : derivada_i2[1];
+            derivada_i2[1] = (derivada_i2[1] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[1];
+
+
+            vcap_ref_ab[4] = vcap_ref_ab[2];
+            vcap_ref_ab[2] = vcap_ref_ab[0];
+            vcap_ref_ab[0] = Vg_ab[0] +Lg*derivada_i2[0] + rg*i2_ref_ab_virtual[0];
+
+            vcap_ref_ab[5] = vcap_ref_ab[3];
+            vcap_ref_ab[3] = vcap_ref_ab[1];
+            vcap_ref_ab[1] = Vg_ab[1] + Lg*derivada_i2[1] + rg*i2_ref_ab_virtual[1];
+*/
+/*
+
+     // ========= Transformadas Clarke =========
+     ClarkeOutput v_pac = ClarkeTransform(va_pac, vb_pac, vc_pac);
+     ClarkeOutput i1    = ClarkeTransform(i1_a, i1_b, i1_c);
+     ClarkeOutput v_cap = ClarkeTransform(va_cap, vb_cap, vc_cap);
+     ClarkeOutput i2    = ClarkeTransform(i2_a, i2_b, i2_c);
+
+     // ========= Atualizar vetores =========
+     // Usar vetor [0, 2, 4] para alfa e [1, 3, 5] para beta
+     float Vg_ab[6], i1_ab[4], i2_ab[4], vcap_ab[4];
+
+     Vg_ab[4] = Vg_ab[2]; Vg_ab[2] = Vg_ab[0]; Vg_ab[0] = v_pac.alfa;
+     Vg_ab[5] = Vg_ab[3]; Vg_ab[3] = Vg_ab[1]; Vg_ab[1] = v_pac.beta;
+
+     i1_ab[2] = i1_ab[0]; i1_ab[0] = i1.alfa;
+     i1_ab[3] = i1_ab[1]; i1_ab[1] = i1.beta;
+
+     i2_ab[2] = i2_ab[0]; i2_ab[0] = i2.alfa;
+     i2_ab[3] = i2_ab[1]; i2_ab[1] = i2.beta;
+
+     vcap_ab[2] = vcap_ab[0]; vcap_ab[0] = v_cap.alfa;
+     vcap_ab[3] = vcap_ab[1]; vcap_ab[1] = v_cap.beta;
+
+     // ========= Extrapolação =========
+     float Vg_k1[2], Vg_k2[2];
+     extrapolar_k1(Vg_ab, Vg_k1);
+     extrapolar_k2(Vg_ab, Vg_k2);
+
+     // ========= Filtro SOGI =========
+     float Vg_filtrado[6], Vg_q_filtrado[4];
+     Vg_filtrado[4] = Vg_filtrado[2]; Vg_filtrado[2] = Vg_filtrado[0];
+     Vg_filtrado[0] = calcular_v_filtrado(Vg_ab, Vg_filtrado, 0, 4, 2, 4);
+
+     Vg_filtrado[5] = Vg_filtrado[3]; Vg_filtrado[3] = Vg_filtrado[1];
+     Vg_filtrado[1] = calcular_v_filtrado(Vg_ab, Vg_filtrado, 1, 5, 3, 5);
+
+     Vg_q_filtrado[2] = Vg_q_filtrado[0];
+     Vg_q_filtrado[0] = calcular_q_filtrado(Vg_filtrado, Vg_q_filtrado, 0, 2, 2);
+
+     Vg_q_filtrado[3] = Vg_q_filtrado[1];
+     Vg_q_filtrado[1] = calcular_q_filtrado(Vg_filtrado, Vg_q_filtrado, 1, 3, 3);
+
+     // ========= Sequência positiva / negativa =========
+     float Vg_pos[2], Vg_neg[2];
+     Vg_pos[0] = 0.5f * (Vg_filtrado[0] - Vg_q_filtrado[1]);
+     Vg_pos[1] = 0.5f * (Vg_filtrado[1] + Vg_q_filtrado[0]);
+
+     Vg_neg[0] = 0.5f * (Vg_filtrado[0] + Vg_q_filtrado[1]);
+     Vg_neg[1] = 0.5f * (Vg_filtrado[1] - Vg_q_filtrado[0]);
+
+     // Proteção contra zero
+     if (Vg_pos[0] == 0.0f) Vg_pos[0] = LIMITAR_ZERO;
+     if (Vg_pos[1] == 0.0f) Vg_pos[1] = LIMITAR_ZERO;
+
+     // ========= Corrente de referência i2 =========
+     float pos_0_sq = Vg_pos[0] * Vg_pos[0];
+     float pos_1_sq = Vg_pos[1] * Vg_pos[1];
+     float neg_0_sq = Vg_neg[0] * Vg_neg[0];
+     float neg_1_sq = Vg_neg[1] * Vg_neg[1];
+
+     float D = (pos_0_sq + pos_1_sq) - K * (neg_0_sq + neg_1_sq);
+     float E = (pos_0_sq + pos_1_sq) + K * (neg_0_sq + neg_1_sq);
+
+     float inv_D = 1.0f / (D != 0.0f ? D : LIMITAR_ZERO);
+     float inv_E = 1.0f / (E != 0.0f ? E : LIMITAR_ZERO);
+
+     float i2_ref_pos[2], i2_ref_neg[2], i2_ref[2];
+
+     i2_ref_pos[0] = DOIS_DIV_3 * ((Vg_pos[0] * P_ref) * inv_D + (Vg_pos[1] * Q_ref) * inv_E);
+     i2_ref_pos[1] = DOIS_DIV_3 * ((Vg_pos[1] * P_ref) * inv_D - (Vg_pos[0] * Q_ref) * inv_E);
+
+     i2_ref_neg[0] = DOIS_DIV_3 * ((-K * Vg_neg[0] * P_ref) * inv_D + (K * Vg_neg[1] * Q_ref) * inv_E);
+     i2_ref_neg[1] = DOIS_DIV_3 * ((-K * Vg_neg[1] * P_ref) * inv_D - (K * Vg_neg[0] * Q_ref) * inv_E);
+
+     i2_ref[0] = i2_ref_pos[0] + i2_ref_neg[0];
+     i2_ref[1] = i2_ref_pos[1] + i2_ref_neg[1];
+
+     // ========= Extrapolação da referência =========
+     float i2_ref_ab[6], i2_ref_k2[2];
+     i2_ref_ab[4] = i2_ref_ab[2]; i2_ref_ab[2] = i2_ref_ab[0]; i2_ref_ab[0] = i2_ref[0];
+     i2_ref_ab[5] = i2_ref_ab[3]; i2_ref_ab[3] = i2_ref_ab[1]; i2_ref_ab[1] = i2_ref[1];
+
+     extrapolar_k2(i2_ref_ab, i2_ref_k2);
+
+     // ========= Corrente virtual =========
+     float vcap_ref_ab[6], i2_ref_virtual[6], i2_virtual_k2[2];
+
+     float vcap_ref[2];
+     vcap_ref[0] = Vg_ab[0] + Lg * ((i2_ref_ab[0] - i2_ref_ab[2]) * INV_TS) + rg * i2_ref_ab[0];
+     vcap_ref[1] = Vg_ab[1] + Lg * ((i2_ref_ab[1] - i2_ref_ab[3]) * INV_TS) + rg * i2_ref_ab[1];
+
+     i2_ref_virtual[4] = i2_ref_virtual[2]; i2_ref_virtual[2] = i2_ref_virtual[0];
+     i2_ref_virtual[0] = i2_ref[0] - (1.55f * vcap_ref[0] + 0.45f * vcap_ab[0]) * INV_2_RV;
+
+     i2_ref_virtual[5] = i2_ref_virtual[3]; i2_ref_virtual[3] = i2_ref_virtual[1];
+     i2_ref_virtual[1] = i2_ref[1] - (1.55f * vcap_ref[1] + 0.45f * vcap_ab[1]) * INV_2_RV;
+
+     extrapolar_k2(i2_ref_virtual, i2_virtual_k2);
+
+     // ========= Potência Ativa e Reativa =========
+     float P_ativa   = TRES_DIV_2 * (Vg_ab[0] * i2_ab[0] + Vg_ab[1] * i2_ab[1]);
+     float Q_reativa = TRES_DIV_2 * (Vg_ab[1] * i2_ab[0] - Vg_ab[0] * i2_ab[1]);
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//------------------------------------------------------------------------------------------------------------------
+
+   fResult = ADC_readResult(ADCARESULT_BASE, ADC0_SOC0);
+
+   adcVoltage =  fResult*norm_ADC;
+
+   fVal = ADC_readResult(ADC1_RESULT_BASE, ADC1_SOC0);
+
+   adcAmper = fVal*norm_ADC_il;
+
+    x[2] = x[1]; x[1] = x[0]; x[0] = REF - adcVoltage;
+    y[2] = y[1]; y[1] = y[0];
+
+    y[0] = B0*x[0] + B1*x[1] + B2*x[2] - A1*y[1] - A2*y[2];
+
+
+     if (y[0] > UL) y[0] = UL;
+     if (y[0] < LL) y[0] = LL;
+
+     duty_cmp = (uint16_t)(PWM_TOP * (1.0f - y[0]));
+
+    EPWM_setCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A, duty_cmp);
+
+/*
+    if (EPWM_getTripZoneFlagStatus(EPWM0_BASE) & EPWM_TZ_FLAG_OST)
+   {
+        if (adcAmper < LIMIAR_REARME_ADC)
+        {
+            CMPSS_clearFilterLatchHigh(myCMPSS0_BASE); // libera latch do comparador
+            EPWM_clearTripZoneFlag(EPWM0_BASE, EPWM_TZ_INTERRUPT | EPWM_TZ_FLAG_OST | EPWM_TZ_FLAG_DCAEVT1);
+        }
+    }
+*/
+}
+
+void extrapolar_k1(float V[6], float Vk1[2])
+{
+    Vk1[0] = 3.0f * V[0] - 3.0f * V[2] + V[4];
+    Vk1[1] = 3.0f * V[1] - 3.0f * V[3] + V[5];
+}
+
+void extrapolar_k2(float V[6], float Vk2[2])
+{
+    Vk2[0] = 6.0f * V[0] - 8.0f * V[2] + 3.0f * V[4];
+    Vk2[1] = 6.0f * V[1] - 8.0f * V[3] + 3.0f * V[5];
+}
+
+
+float calcular_v_filtrado(float *entrada, float *saida_filtrada, int entrada_atual, int entrada_ant, int saida_ant_1, int saida_ant_2) {
+    return a1*entrada[entrada_atual]- a2*entrada[entrada_ant] + b1*saida_filtrada[saida_ant_1]- b2*saida_filtrada[saida_ant_2];
+}
+
+
+float calcular_q_filtrado(float *entrada_filtrada, float *saida_q_filtrada, int entrada_atual, int entrada_ant, int saida_ant) {
+    return a11*entrada_filtrada[entrada_atual] + a22*entrada_filtrada[entrada_ant] + saida_q_filtrada[saida_ant];
+}
+
+
