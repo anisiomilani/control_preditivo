@@ -12,8 +12,6 @@
 const adc              = scripting.addModule("/driverlib/adc.js", {}, false);
 const adc1             = adc.addInstance();
 const adc2             = adc.addInstance();
-const cla              = scripting.addModule("/driverlib/cla.js", {}, false);
-const cla1             = cla.addInstance();
 const cmpss            = scripting.addModule("/driverlib/cmpss.js", {}, false);
 const cmpss1           = cmpss.addInstance();
 const cputimer         = scripting.addModule("/driverlib/cputimer.js", {}, false);
@@ -31,9 +29,6 @@ const gpio2            = gpio.addInstance();
 const inputxbar_input  = scripting.addModule("/driverlib/inputxbar_input.js", {}, false);
 const inputxbar_input1 = inputxbar_input.addInstance();
 const inputxbar_input2 = inputxbar_input.addInstance();
-const memcfg           = scripting.addModule("/driverlib/memcfg.js");
-const CMD              = scripting.addModule("/utilities/cmd_tool/cmd_syscfg/source/CMD", {}, false);
-const CMD1             = CMD.addInstance();
 
 /**
  * Write custom configuration values to the imported modules.
@@ -61,24 +56,6 @@ adc2.enableInterrupt1               = true;
 adc2.enableInterrupt1ContinuousMode = true;
 adc2.adcBase                        = "ADCC_BASE";
 adc2.soc0Channel                    = "ADC_CH_ADCIN2";
-
-cla1.$name              = "myCLA0";
-cla1.enable_CLA_TASK_8  = false;
-cla1.enable_CLA_TASK_7  = false;
-cla1.enable_CLA_TASK_6  = false;
-cla1.enable_CLA_TASK_5  = false;
-cla1.enable_CLA_TASK_4  = false;
-cla1.enable_CLA_TASK_3  = false;
-cla1.enable_CLA_TASK_2  = false;
-cla1.cpuint_CLA_TASK_2  = false;
-cla1.cpuint_CLA_TASK_3  = false;
-cla1.cpuint_CLA_TASK_4  = false;
-cla1.cpuint_CLA_TASK_5  = false;
-cla1.cpuint_CLA_TASK_6  = false;
-cla1.cpuint_CLA_TASK_7  = false;
-cla1.cpuint_CLA_TASK_8  = false;
-cla1.trigger_CLA_TASK_1 = "CLA_TRIGGER_ADCA1";
-cla1.cpuint_CLA_TASK_1  = false;
 
 cmpss1.$name        = "myCMPSS0";
 cmpss1.enableModule = true;
@@ -121,6 +98,8 @@ epwm1.epwmTripZone_oneShotSource                                 = ["EPWM_TZ_SIG
 epwm1.epwm.$assign                                               = "EPWM1";
 epwm1.epwm.epwm_aPin.$assign                                     = "boosterpack1.40";
 epwm1.epwm.epwm_bPin.$assign                                     = "boosterpack1.39";
+scripting.suppress("Connected to hardware,@@@.+?@@@ is connected to EPWM1 BP on the LaunchPad F28379D\\. Consider selecting it in \'use hardware\' above\\. @@@.+?@@@", epwm1.epwm, "epwm_aPin");
+scripting.suppress("Connected to hardware,@@@.+?@@@ is connected to EPWM1 BP on the LaunchPad F28379D\\. Consider selecting it in \'use hardware\' above\\. @@@.+?@@@", epwm1.epwm, "epwm_bPin");
 
 epwmxbar1.$name     = "myEPWMXBAR0";
 epwmxbar1.muxesUsed = ["XBAR_MUX10"];
@@ -142,16 +121,3 @@ inputxbar_input1.inputxbarGpio = "GPIO22";
 
 inputxbar_input2.$name         = "myINPUTXBARINPUT1";
 inputxbar_input2.inputxbarGpio = "GPIO52";
-
-memcfg.init_MEMCFG_SECT_MSGCPUTOCLA1 = true;
-memcfg.init_MEMCFG_SECT_MSGCLA1TOCPU = true;
-memcfg.config_MEMCFG_SECT_LS1        = "CLA_data";
-memcfg.config_MEMCFG_SECT_LS4        = "CLA_prog";
-memcfg.config_MEMCFG_SECT_LS5        = "CLA_prog";
-
-CMD1.$name                         = "CMD0";
-CMD1.sectionMemory_claConst        = ["RAMLS1"];
-CMD1.sectionMemory_claScratchpad   = ["RAMLS1"];
-CMD1.sectionMemory_cpuToCla1MsgRAM = ["CPUTOCLA_MSGRAM"];
-CMD1.sectionMemory_cla1ToCpuMsgRAM = ["CLATOCPU_MSGRAM"];
-CMD1.sectionMemory_cla1Prog        = ["RAMLS5"];
