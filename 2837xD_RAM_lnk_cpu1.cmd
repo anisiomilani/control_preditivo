@@ -78,7 +78,7 @@ PAGE 1 :
 SECTIONS
 {
    codestart        : > BEGIN,      PAGE = 0
-   .text            : >> RAMGS3 | RAMGS4,    PAGE = 1
+   .text : 			>> RAMGS3 | RAMGS4 | RAMGS5 | RAMGS6, PAGE = 1
    .cinit           : > RAMM0,      PAGE = 0
    .switch          : > RAMM0,      PAGE = 0
    .reset           : > RESET,      PAGE = 0, TYPE = DSECT /* not used, */

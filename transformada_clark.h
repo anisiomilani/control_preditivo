@@ -1,7 +1,7 @@
 #ifndef TRANSFORMADA_CLARK_H_
 #define TRANSFORMADA_CLARK_H_
 
-void ClarkeTransform(float a, float b, float c,  float *alfa,  float *beta);
+void ClarkeTransform(volatile  float a, volatile  float b, volatile  float c,  volatile  float *alfa, volatile  float *beta);
 
 
 
