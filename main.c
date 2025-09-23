@@ -117,8 +117,6 @@ volatile float va_cap, vb_cap, vc_cap;
 volatile float i2_a, i2_b, i2_c;
 volatile float Vdc =700.0f;
 
-
-
 int16_t linha_op[2] = { 0, 0 };
 int16_t passado = 0;
 volatile int16_t K = 0;
@@ -134,7 +132,7 @@ volatile float vcap_ab[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 volatile float Vg_ab_k1[2] = { 0.0f, 0.0f };
 volatile float Vg_ab_k2[2] = { 0.0f, 0.0f };
 volatile float Vg_ab_filtrado[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-volatile float Vg_ab_q_filtrado[4] = { -3.0f, 5.0f, -2.0f, 1.0f };
+volatile float Vg_ab_q_filtrado[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 volatile float Vg_ab_filtrado_neg[2] = { 0.0f, 0.0f };
 volatile float Vg_ab_filtrado_pos[2] = { 0.0f, 0.0f };
 volatile float i2_ref_ab[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
@@ -151,6 +149,23 @@ volatile float vcap_ab_k1[2] = { 0.0f, 0.0f };
 volatile float i1_ab_k2[2] = { 0.0f, 0.0f };
 volatile float i2_ab_k2[2] = { 0.0f, 0.0f };
 volatile float vcap_ab_k2[2] = { 0.0f, 0.0f };
+volatile float Vk_ab[2];
+
+void redefinindo_vetores_alfa_beta(void);
+void aplicarFiltroSOGI(void);
+void calcularSequencias(void);
+void gerarCorrenteReferenciaI2(void);
+void gerarCorrenteVirtual(void);
+void calcularPotencias(void);
+void gerarReferenciaVcap(void);
+void gerarReferenciaI1(void);
+void estimarValores_k1(void);
+int16_t calcularLinhaOtimizada(void);
+void aplicarPWM(int16_t linha);
+
+
+volatile float P_ativa, Q_reativa;
+volatile uint32_t pwm1,pwm2,pwm3;
 
 
 void main(void)
@@ -173,27 +188,6 @@ void main(void)
     while (1)
     {
 
-        // Componentes alfa-beta
-        volatile float valfa_pac, vbeta_pac;
-        volatile float i1_alfa, i1_beta;
-        volatile float valfa_cap, vbeta_cap;
-        volatile float i2_alfa, i2_beta;
-        volatile float i2_ref_alfa, i2_ref_alfa_pos, i2_ref_alfa_neg;
-        volatile float i2_ref_beta, i2_ref_beta_pos, i2_ref_beta_neg;
-
-        // Ganhos, potências, controle
-        volatile float g_op, D, E, inv_D, inv_E;
-        volatile float P_ativa, Q_reativa;
-        volatile float gcap_alfa, gcap_beta;
-
-        volatile float g2_alfa, g2_beta, g1_alfa, g1_beta;
-        volatile int16_t gsa, gsb, gsc;
-        volatile float  g_k;
-        volatile float Vg_ab_filtrado_pos_0_quadrado, Vg_ab_filtrado_pos_1_quadrado;
-        volatile float Vg_ab_filtrado_neg_0_quadrado, Vg_ab_filtrado_neg_1_quadrado;
-        volatile int16_t linha;
-        volatile float Vk_ab[2];
-
 
         //  cmp_Value = (uint32_t) (g_duty_cycle * ePwm_TimeBase);
         //  EPWM_setCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A, cmp_Value);
@@ -206,213 +200,22 @@ void main(void)
         passado = linha_op[0];
         linha_op[1] = linha_op[0];
         linha_op[0] = 1000;
-        g_op = INICIO_OPERACIONAL;
-// ========================================== 1. Transformadas CLARK ==========================================================================
+      //  g_op = INICIO_OPERACIONAL;
 
-        ClarkeTransform(va_pac, vb_pac, vc_pac, &valfa_pac, &vbeta_pac);
-        ClarkeTransform(i1_a, i1_b, i1_c, &i1_alfa, &i1_beta);
-        ClarkeTransform(va_cap, vb_cap, vc_cap, &valfa_cap, &vbeta_cap);
-        ClarkeTransform(i2_a, i2_b, i2_c, &i2_alfa, &i2_beta);
-
-
-// ========================================== 2. Redefinindo as variaveis para vetores =========================================================
-        // operador 0 é para PAR
-        // operador 1 é para IMPAR
-
-        atualizar_valor_par_impar_vetor_6(Vg_ab, 0, valfa_pac);
-        atualizar_valor_par_impar_vetor_6(Vg_ab, 1, vbeta_pac);
-
-        atualizar_valor_par_impar_vetor_4(vcap_ab, 0, valfa_cap);
-        atualizar_valor_par_impar_vetor_4(vcap_ab, 1, vbeta_cap);
-
-        atualizar_valor_par_impar_vetor_4(i1_ab, 0, i1_alfa);
-        atualizar_valor_par_impar_vetor_4(i1_ab, 1, i1_beta);
-
-        atualizar_valor_par_impar_vetor_4(i2_ab, 0, i2_alfa);
-        atualizar_valor_par_impar_vetor_4(i2_ab, 1, i2_beta);
-
-// ========================================== 3. Extrapolações ==========================================================================
-
+        redefinindo_vetores_alfa_beta();
+        // extrapolação tensão PAC
         extrapolar_k1(Vg_ab, Vg_ab_k1);
         extrapolar_k2(Vg_ab, Vg_ab_k2);
-
-// =========================================== 4. Filtro SOGI ============================================================================
-
-        atualizar_valor_par_impar_vetor_6(Vg_ab_filtrado, 0, Vg_ab_filtrado[0]);
-        atualizar_valor_par_impar_vetor_6(Vg_ab_filtrado, 1, Vg_ab_filtrado[1]);
-        Vg_ab_filtrado[0]= a1 * Vg_ab[0] - a2 * Vg_ab[4] + b1 * Vg_ab_filtrado[2]- b2 * Vg_ab_filtrado[4];
-        Vg_ab_filtrado[1]= a1 * Vg_ab[1] - a2 * Vg_ab[5] + b1 * Vg_ab_filtrado[3]- b2 * Vg_ab_filtrado[5];
-
-        //   componente em quadratura
-
-        atualizar_valor_par_impar_vetor_4(Vg_ab_q_filtrado, 0, Vg_ab_q_filtrado[0]);
-        atualizar_valor_par_impar_vetor_4(Vg_ab_q_filtrado, 1, Vg_ab_q_filtrado[1]);
-        Vg_ab_q_filtrado[0]= a11 * Vg_ab_filtrado[0] + a22 * Vg_ab_filtrado[2] + Vg_ab_q_filtrado[2];
-        Vg_ab_q_filtrado[1]= a11 * Vg_ab_filtrado[1] + a22 * Vg_ab_filtrado[3] + Vg_ab_q_filtrado[3];
-
-// =========================================== 6. Sequência positiva e negativa =============================================================
-
-        Vg_ab_filtrado_pos[0] = HALF * (Vg_ab_filtrado[0] - Vg_ab_q_filtrado[1]);
-        Vg_ab_filtrado_pos[1] = HALF * (Vg_ab_filtrado[1] + Vg_ab_q_filtrado[0]);
-
-        Vg_ab_filtrado_neg[0] = HALF * (Vg_ab_filtrado[0] + Vg_ab_q_filtrado[1]);
-        Vg_ab_filtrado_neg[1] = HALF * (Vg_ab_filtrado[1] - Vg_ab_q_filtrado[0]);
-
-        if (Vg_ab_filtrado_pos[0] == ZERO) Vg_ab_filtrado_pos[0] = LIMITAR_ZERO;
-        if (Vg_ab_filtrado_pos[1] == ZERO) Vg_ab_filtrado_pos[1] = LIMITAR_ZERO;
-
-// =========================================== 7. Utilizando as sequencia para determinar a referencia conforme i2 ===============================
-// =========================================== o valor definido para K =======================================================================
-// =========================================== k = 0 sistema senoidal na rede==============================================================
-// =========================================== k = 1 controle potencia ativa==============================================================
-// =========================================== k = -1 controle potencia reativa==============================================================
-
-        Vg_ab_filtrado_pos_0_quadrado = Vg_ab_filtrado_pos[0]* Vg_ab_filtrado_pos[0];
-        Vg_ab_filtrado_pos_1_quadrado = Vg_ab_filtrado_pos[1]* Vg_ab_filtrado_pos[1];
-        Vg_ab_filtrado_neg_0_quadrado = Vg_ab_filtrado_neg[0]* Vg_ab_filtrado_neg[0];
-        Vg_ab_filtrado_neg_1_quadrado = Vg_ab_filtrado_neg[1] * Vg_ab_filtrado_neg[1];
-
-        D = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado)- K* (Vg_ab_filtrado_neg_0_quadrado+ Vg_ab_filtrado_neg_1_quadrado);
-        E = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado)+ K* (Vg_ab_filtrado_neg_0_quadrado+ Vg_ab_filtrado_neg_1_quadrado);
-
-        // Proteger contra divisão por zero
-        if (D == ZERO) D = LIMITAR_ZERO;
-        if (E == ZERO) E = LIMITAR_ZERO;
-
-        // Fazer só uma divisão para cada
-        inv_D = 1.0f / D;
-        inv_E = 1.0f / E;
-
-        i2_ref_alfa_pos = DOIS_DIV_3 * (((Vg_ab_filtrado_pos[0] * P_ref) * inv_D) + ((Vg_ab_filtrado_pos[1] * Q_ref) * inv_E));
-        i2_ref_beta_pos = DOIS_DIV_3 * (((Vg_ab_filtrado_pos[1] * P_ref) * inv_D) - ((Vg_ab_filtrado_pos[0] * Q_ref) * inv_E));
-
-        i2_ref_alfa_neg = DOIS_DIV_3 * ((-K * ((Vg_ab_filtrado_neg[0] * P_ref) * inv_D)) + (K * ((Vg_ab_filtrado_neg[1] * Q_ref) * inv_E)));
-        i2_ref_beta_neg = DOIS_DIV_3 * ((-K * ((Vg_ab_filtrado_neg[1] * P_ref) * inv_D)) - (K * ((Vg_ab_filtrado_neg[0] * Q_ref) * inv_E)));
-
-        atualizar_valor_par_impar_vetor_6(i2_ref_ab, 0, i2_ref_ab[0]);
-        atualizar_valor_par_impar_vetor_6(i2_ref_ab, 1, i2_ref_ab[1]);
-        i2_ref_ab[0] = i2_ref_alfa_pos + i2_ref_alfa_neg;
-        i2_ref_ab[1] = i2_ref_beta_pos + i2_ref_beta_neg;
-
-         // Extrapolação da corrente de referencia i2
-
-         extrapolar_k2(i2_ref_ab, i2_ref_ab_k2);
-
-
-// =========================================== 8. Calculo corrente virtual ===================================================================
-
-
-        //foi realizado uma media entre a tensao medida no capacitor e tensao referencia capacitor
-        atualizar_valor_par_impar_vetor_6(i2_ref_ab_virtual, 0, i2_ref_ab_virtual[0]);
-        atualizar_valor_par_impar_vetor_6(i2_ref_ab_virtual, 1, i2_ref_ab_virtual[1]);
-        i2_ref_ab_virtual[0]=i2_ref_ab[0] - (1.55f * vcap_ref_ab[0] + 0.45f * vcap_ab[0]) * INV_2_RV;
-        i2_ref_ab_virtual[1]=i2_ref_ab[1] - (1.55f * vcap_ref_ab[1] + 0.45f * vcap_ab[1]) * INV_2_RV;
-// =========================================== 9. Calculo potencia ativa e reativa real  ===================================================================
-
-        P_ativa = TRES_DIV_2 * (Vg_ab[0] * i2_ab[0] + Vg_ab[1] * i2_ab[1]);
-
-        Q_reativa = TRES_DIV_2 * (Vg_ab[1] * i2_ab[0] - Vg_ab[0] * i2_ab[1]);
-
-// =========================================== 10. Gerando Ref - Vcap  ===================================================================
-
-        derivada_i2[0] = (i2_ref_ab_virtual[0] - i2_ref_ab_virtual[2]) * INV_TS;
-        derivada_i2[1] = (i2_ref_ab_virtual[1] - i2_ref_ab_virtual[3]) * INV_TS;
-
-        //  limitador=1;    //Limitando a derivada para remover picos na transição
-
-        derivada_i2[0] = (derivada_i2[0] > LIMITADOR_UM) ? LIMITADOR_UM : derivada_i2[0];
-        derivada_i2[0] = (derivada_i2[0] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[0];
-        derivada_i2[1] = (derivada_i2[1] > LIMITADOR_UM) ? LIMITADOR_UM : derivada_i2[1];
-        derivada_i2[1] = (derivada_i2[1] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[1];
-
-        atualizar_valor_par_impar_vetor_6( vcap_ref_ab, 0, vcap_ref_ab[0]);
-        atualizar_valor_par_impar_vetor_6( vcap_ref_ab, 1, vcap_ref_ab[1]);
-        vcap_ref_ab[0]=Vg_ab[0] + Lg * derivada_i2[0] + rg * i2_ref_ab_virtual[0];
-        vcap_ref_ab[1]=Vg_ab[1] + Lg * derivada_i2[1] + rg * i2_ref_ab_virtual[1];
-
-        //extrapolação da tensão no capacitor
-        extrapolar_k2(vcap_ref_ab, vcap_ref_ab_k2);
-
-// =========================================== 11. Gerando Ref da corrente i1 com resistor em paralelo com o capacitor  ===================================================================
-//----------------------------------------       Amortecimento do filtro LCL---------------------------------------------
-
-        atualizar_valor_par_impar_vetor_6(i1_ref_ab, 0, i1_ref_ab[0]);
-        atualizar_valor_par_impar_vetor_6(i1_ref_ab, 1,  i1_ref_ab[1]);
-        i1_ref_ab[0]=const_5 * (vcap_ref_ab[0] - vcap_ref_ab[2]) + (vcap_ref_ab[0] * INV_RV) + i2_ref_ab_virtual[0];
-        i1_ref_ab[1]=const_5 * (vcap_ref_ab[1] - vcap_ref_ab[3]) + (vcap_ref_ab[1] * INV_RV) + i2_ref_ab_virtual[1];
-
-        //extrapolação da corrente i1
-        extrapolar_k2(i1_ref_ab, i1_ref_ab_k2);
-
-// =========================================== 12. Entrada do algoritmo de controle  ===================================================================
-
-//---------------------------                 Estimando os valores em (K+1) do preditivo----------------------------------------------------------
-
-         Vk_ab[0] = Vdc * s_ab[passado][0];
-         Vk_ab[1] = Vdc * s_ab[passado][1];
-
-         i1_ab_k1[0] = (phi_1 * i1_ab[0]) + gama_1 * (Vk_ab[0] - vcap_ab[0]);
-         i1_ab_k1[1] = (phi_1 * i1_ab[1]) + gama_1 * (Vk_ab[1] - vcap_ab[1]);
-
-         i2_ab_k1[0] = (phi_2 * i2_ab[0]) + gama_2 * (vcap_ab[0] - Vg_ab[0]);
-         i2_ab_k1[1] = (phi_2 * i2_ab[1]) + gama_2 * (vcap_ab[1] - Vg_ab[1]);
-
-         //-------------------------------COM AMORTECIMENTO------------------------------------------------------------
-         vcap_ab_k1[0] = (phi_3 * vcap_ab[0]) + gama_3 * (i1_ab[0] - i2_ab[0]);
-         vcap_ab_k1[1] = (phi_3 * vcap_ab[1]) + gama_3 * (i1_ab[1] - i2_ab[1]);
-
-
- //---------------------------                 Estimando os valores em (K+2) do preditivo----------------------------------------------------------
-
-         for (linha = 0; linha < 8; linha++)
-         {
-
-             //----------------------------------------Tensão de controle-------------------------------------------------------
-             Vk_ab[0] = Vdc * s_ab[linha][0];
-             Vk_ab[1] = Vdc * s_ab[linha][1];
-
-             //---------------------------------------- Predição (k+2) -------------------------------------------------------------
-
-             i1_ab_k2[0] = (phi_1 * i1_ab_k1[0]) + gama_1 * (Vk_ab[0] - vcap_ab_k1[0]);
-             i1_ab_k2[1] = (phi_1 * i1_ab_k1[1]) + gama_1 * (Vk_ab[1] - vcap_ab_k1[1]);
-
-             i2_ab_k2[0] = (phi_2 * i2_ab_k1[0]) + gama_2 * (vcap_ab_k1[0] - Vg_ab_k1[0]);
-             i2_ab_k2[1] = (phi_2 * i2_ab_k1[1]) + gama_2 * (vcap_ab_k1[1] - Vg_ab_k1[1]);
-
-             //--------------------------------------COM AMORTECIMENTO-----------------------------------------------------
-             vcap_ab_k2[0] = (phi_3 * vcap_ab_k1[0]) + gama_3 * (i1_ab_k1[0] - i2_ab_k1[0]);
-             vcap_ab_k2[1] = (phi_3 * vcap_ab_k1[1]) + gama_3 * (i1_ab_k1[1] - i2_ab_k1[1]);
-
-//--------------------------------- calculando as variaveis do custo para ser comparado no preditivo ----------------------------------
-             g2_alfa = (i2_ab_k2[0] - i2_ref_ab_k2[0]) * (i2_ab_k2[0] - i2_ref_ab_k2[0]);
-             g2_beta = (i2_ab_k2[1] - i2_ref_ab_k2[1]) * (i2_ab_k2[1] - i2_ref_ab_k2[1]);
-
-             g1_alfa = (i1_ab_k2[0] - i1_ref_ab_k2[0]) * (i1_ab_k2[0] - i1_ref_ab_k2[0]);
-             g1_beta = (i1_ab_k2[1] - i1_ref_ab_k2[1]) * (i1_ab_k2[1] - i1_ref_ab_k2[1]);
-
-             gcap_alfa = (vcap_ab_k2[0] - vcap_ref_ab_k2[0]) * (vcap_ab_k2[0] - vcap_ref_ab_k2[0]);
-             gcap_beta = (vcap_ab_k2[1] - vcap_ref_ab_k2[1]) * (vcap_ab_k2[1] - vcap_ref_ab_k2[1]);
-
-             gsa = (s_abc[linha][0] - s_abc[passado][0]) * (s_abc[linha][0] - s_abc[passado][0]);
-             gsb = (s_abc[linha][1] - s_abc[passado][1]) * (s_abc[linha][1] - s_abc[passado][1]);
-             gsc = (s_abc[linha][2] - s_abc[passado][2]) * (s_abc[linha][2] - s_abc[passado][2]);
-
-             g_k = g_custo_i1 * (g1_alfa + g1_beta) + g_custo_vcap * (gcap_alfa + gcap_beta) + g_custo_i2 * (g2_alfa + g2_beta) +  g_custo_s * ((float) (gsa + gsb + gsc));
-
-
-             if (g_k < g_op)
-             {
-
-                 linha_op[0] = linha;  // valor atual
-                 g_op = g_k;
-             }
-
-         }
-
-        volatile uint32_t pwm1, pwm2, pwm3;
-        pwm1= s_abc[linha_op[0]][0];
-        pwm2 = s_abc[linha_op[0]][1];
-        pwm3= s_abc[linha_op[0]][2];
+        aplicarFiltroSOGI();
+        calcularSequencias();
+        gerarCorrenteReferenciaI2();
+        gerarCorrenteVirtual();
+        calcularPotencias();
+        gerarReferenciaVcap();
+        gerarReferenciaI1();
+        estimarValores_k1();
+        linha_op[0] = calcularLinhaOtimizada();
+        aplicarPWM(linha_op[0]);
 
 //--------------------------------------------------------
         /*
@@ -429,6 +232,277 @@ void main(void)
         //  }
     }
 }
+
+void redefinindo_vetores_alfa_beta(void) {
+
+        // Componentes alfa-beta
+       volatile float valfa_pac, vbeta_pac;
+       volatile float i1_alfa, i1_beta;
+       volatile float valfa_cap, vbeta_cap;
+       volatile float i2_alfa, i2_beta;
+// ========================================== 1. Transformadas CLARK ==========================================================================
+
+        ClarkeTransform(va_pac, vb_pac, vc_pac, &valfa_pac, &vbeta_pac);
+        ClarkeTransform(i1_a, i1_b, i1_c, &i1_alfa, &i1_beta);
+        ClarkeTransform(va_cap, vb_cap, vc_cap, &valfa_cap, &vbeta_cap);
+        ClarkeTransform(i2_a, i2_b, i2_c, &i2_alfa, &i2_beta);
+
+// ========================================== 2. Redefinindo as variaveis para vetores =========================================================
+                // operador 0 é para PAR
+                // operador 1 é para IMPAR
+
+        atualizar_valor_par_impar_vetor_6(Vg_ab, 0, Vg_ab[0]);
+        atualizar_valor_par_impar_vetor_6(Vg_ab, 1, Vg_ab[1]);
+        Vg_ab[0]=valfa_pac;
+        Vg_ab[1]=vbeta_pac;
+
+        atualizar_valor_par_impar_vetor_4(vcap_ab, 0, vcap_ab[0]);
+        atualizar_valor_par_impar_vetor_4(vcap_ab, 1, vcap_ab[1]);
+        vcap_ab[0]=valfa_cap;
+        vcap_ab[1]=vbeta_cap;
+
+        atualizar_valor_par_impar_vetor_4(i1_ab, 0, i1_ab[0]);
+        atualizar_valor_par_impar_vetor_4(i1_ab, 1, i1_ab[1]);
+        i1_ab[0]=i1_alfa;
+        i1_ab[1]=i1_beta;
+
+        atualizar_valor_par_impar_vetor_4(i2_ab, 0, i2_ab[0]);
+        atualizar_valor_par_impar_vetor_4(i2_ab, 1, i2_ab[1]);
+        i2_ab[0]=i2_alfa;
+        i2_ab[1]=i2_beta;
+}
+
+void aplicarFiltroSOGI(void){
+
+// =========================================== 4. Filtro SOGI ============================================================================
+
+        atualizar_valor_par_impar_vetor_6(Vg_ab_filtrado, 0, Vg_ab_filtrado[0]);
+        atualizar_valor_par_impar_vetor_6(Vg_ab_filtrado, 1, Vg_ab_filtrado[1]);
+        Vg_ab_filtrado[0]= a1 * Vg_ab[0] - a2 * Vg_ab[4] + b1 * Vg_ab_filtrado[2]- b2 * Vg_ab_filtrado[4];
+        Vg_ab_filtrado[1]= a1 * Vg_ab[1] - a2 * Vg_ab[5] + b1 * Vg_ab_filtrado[3]- b2 * Vg_ab_filtrado[5];
+
+        //   componente em quadratura
+
+        atualizar_valor_par_impar_vetor_4(Vg_ab_q_filtrado, 0, Vg_ab_q_filtrado[0]);
+        atualizar_valor_par_impar_vetor_4(Vg_ab_q_filtrado, 1, Vg_ab_q_filtrado[1]);
+        Vg_ab_q_filtrado[0]= a11 * Vg_ab_filtrado[0] + a22 * Vg_ab_filtrado[2] + Vg_ab_q_filtrado[2];
+        Vg_ab_q_filtrado[1]= a11 * Vg_ab_filtrado[1] + a22 * Vg_ab_filtrado[3] + Vg_ab_q_filtrado[3];
+
+}
+
+void calcularSequencias(void){
+
+// =========================================== 5. Sequência positiva e negativa =============================================================
+
+    Vg_ab_filtrado_pos[0] = HALF * (Vg_ab_filtrado[0] - Vg_ab_q_filtrado[1]);
+    Vg_ab_filtrado_pos[1] = HALF * (Vg_ab_filtrado[1] + Vg_ab_q_filtrado[0]);
+
+    Vg_ab_filtrado_neg[0] = HALF * (Vg_ab_filtrado[0] + Vg_ab_q_filtrado[1]);
+    Vg_ab_filtrado_neg[1] = HALF * (Vg_ab_filtrado[1] - Vg_ab_q_filtrado[0]);
+
+    if (Vg_ab_filtrado_pos[0] == ZERO) Vg_ab_filtrado_pos[0] = LIMITAR_ZERO;
+    if (Vg_ab_filtrado_pos[1] == ZERO) Vg_ab_filtrado_pos[1] = LIMITAR_ZERO;
+
+}
+
+void gerarCorrenteReferenciaI2(void){
+
+
+    volatile float Vg_ab_filtrado_pos_0_quadrado, Vg_ab_filtrado_pos_1_quadrado;
+    volatile float Vg_ab_filtrado_neg_0_quadrado, Vg_ab_filtrado_neg_1_quadrado;
+    volatile float i2_ref_alfa, i2_ref_alfa_pos, i2_ref_alfa_neg;
+    volatile float i2_ref_beta, i2_ref_beta_pos, i2_ref_beta_neg;
+
+    // Ganhos, potências, controle
+    volatile float D, E, inv_D, inv_E;
+
+    // =========================================== 7. Utilizando as sequencia para determinar a referencia conforme i2 ===============================
+    // =========================================== o valor definido para K =======================================================================
+    // =========================================== k = 0 sistema senoidal na rede==============================================================
+    // =========================================== k = 1 controle potencia ativa==============================================================
+    // =========================================== k = -1 controle potencia reativa==============================================================
+
+            Vg_ab_filtrado_pos_0_quadrado = Vg_ab_filtrado_pos[0]* Vg_ab_filtrado_pos[0];
+            Vg_ab_filtrado_pos_1_quadrado = Vg_ab_filtrado_pos[1]* Vg_ab_filtrado_pos[1];
+            Vg_ab_filtrado_neg_0_quadrado = Vg_ab_filtrado_neg[0]* Vg_ab_filtrado_neg[0];
+            Vg_ab_filtrado_neg_1_quadrado = Vg_ab_filtrado_neg[1] * Vg_ab_filtrado_neg[1];
+
+            D = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado)- K* (Vg_ab_filtrado_neg_0_quadrado+ Vg_ab_filtrado_neg_1_quadrado);
+            E = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado)+ K* (Vg_ab_filtrado_neg_0_quadrado+ Vg_ab_filtrado_neg_1_quadrado);
+
+            // Proteger contra divisão por zero
+            if (D == ZERO) D = LIMITAR_ZERO;
+            if (E == ZERO) E = LIMITAR_ZERO;
+
+            // Fazer só uma divisão para cada
+            inv_D = 1.0f / D;
+            inv_E = 1.0f / E;
+
+            i2_ref_alfa_pos = DOIS_DIV_3 * (((Vg_ab_filtrado_pos[0] * P_ref) * inv_D) + ((Vg_ab_filtrado_pos[1] * Q_ref) * inv_E));
+            i2_ref_beta_pos = DOIS_DIV_3 * (((Vg_ab_filtrado_pos[1] * P_ref) * inv_D) - ((Vg_ab_filtrado_pos[0] * Q_ref) * inv_E));
+
+            i2_ref_alfa_neg = DOIS_DIV_3 * ((-K * ((Vg_ab_filtrado_neg[0] * P_ref) * inv_D)) + (K * ((Vg_ab_filtrado_neg[1] * Q_ref) * inv_E)));
+            i2_ref_beta_neg = DOIS_DIV_3 * ((-K * ((Vg_ab_filtrado_neg[1] * P_ref) * inv_D)) - (K * ((Vg_ab_filtrado_neg[0] * Q_ref) * inv_E)));
+
+            atualizar_valor_par_impar_vetor_6(i2_ref_ab, 0, i2_ref_ab[0]);
+            atualizar_valor_par_impar_vetor_6(i2_ref_ab, 1, i2_ref_ab[1]);
+            i2_ref_ab[0] = i2_ref_alfa_pos + i2_ref_alfa_neg;
+            i2_ref_ab[1] = i2_ref_beta_pos + i2_ref_beta_neg;
+
+             // Extrapolação da corrente de referencia i2
+
+             extrapolar_k2(i2_ref_ab, i2_ref_ab_k2);
+}
+
+void gerarCorrenteVirtual(void){
+
+    // =========================================== 8. Calculo corrente virtual ===================================================================
+
+            //foi realizado uma media entre a tensao medida no capacitor e tensao referencia capacitor
+            atualizar_valor_par_impar_vetor_6(i2_ref_ab_virtual, 0, i2_ref_ab_virtual[0]);
+            atualizar_valor_par_impar_vetor_6(i2_ref_ab_virtual, 1, i2_ref_ab_virtual[1]);
+            i2_ref_ab_virtual[0]=i2_ref_ab[0] - (1.55f * vcap_ref_ab[0] + 0.45f * vcap_ab[0]) * INV_2_RV;
+            i2_ref_ab_virtual[1]=i2_ref_ab[1] - (1.55f * vcap_ref_ab[1] + 0.45f * vcap_ab[1]) * INV_2_RV;
+}
+
+void calcularPotencias(void){
+
+    // =========================================== 9. Calculo potencia ativa e reativa real  ===================================================================
+
+            P_ativa = TRES_DIV_2 * (Vg_ab[0] * i2_ab[0] + Vg_ab[1] * i2_ab[1]);
+
+            Q_reativa = TRES_DIV_2 * (Vg_ab[1] * i2_ab[0] - Vg_ab[0] * i2_ab[1]);
+}
+
+void gerarReferenciaVcap(void){
+
+// =========================================== 10. Gerando Ref - Vcap  ===================================================================
+
+            derivada_i2[0] = (i2_ref_ab_virtual[0] - i2_ref_ab_virtual[2]) * INV_TS;
+            derivada_i2[1] = (i2_ref_ab_virtual[1] - i2_ref_ab_virtual[3]) * INV_TS;
+
+            //  limitador=1;    //Limitando a derivada para remover picos na transição
+
+            derivada_i2[0] = (derivada_i2[0] > LIMITADOR_UM) ? LIMITADOR_UM : derivada_i2[0];
+            derivada_i2[0] = (derivada_i2[0] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[0];
+            derivada_i2[1] = (derivada_i2[1] > LIMITADOR_UM) ? LIMITADOR_UM : derivada_i2[1];
+            derivada_i2[1] = (derivada_i2[1] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[1];
+
+            atualizar_valor_par_impar_vetor_6( vcap_ref_ab, 0, vcap_ref_ab[0]);
+            atualizar_valor_par_impar_vetor_6( vcap_ref_ab, 1, vcap_ref_ab[1]);
+            vcap_ref_ab[0]=Vg_ab[0] + Lg * derivada_i2[0] + rg * i2_ref_ab_virtual[0];
+            vcap_ref_ab[1]=Vg_ab[1] + Lg * derivada_i2[1] + rg * i2_ref_ab_virtual[1];
+
+            //extrapolação da tensão no capacitor
+            extrapolar_k2(vcap_ref_ab, vcap_ref_ab_k2);
+}
+
+void gerarReferenciaI1(void){
+
+    // =========================================== 11. Gerando Ref da corrente i1 com resistor em paralelo com o capacitor  ===================================================================
+    //----------------------------------------       Amortecimento do filtro LCL---------------------------------------------
+
+            atualizar_valor_par_impar_vetor_6(i1_ref_ab, 0, i1_ref_ab[0]);
+            atualizar_valor_par_impar_vetor_6(i1_ref_ab, 1,  i1_ref_ab[1]);
+            i1_ref_ab[0]=const_5 * (vcap_ref_ab[0] - vcap_ref_ab[2]) + (vcap_ref_ab[0] * INV_RV) + i2_ref_ab_virtual[0];
+            i1_ref_ab[1]=const_5 * (vcap_ref_ab[1] - vcap_ref_ab[3]) + (vcap_ref_ab[1] * INV_RV) + i2_ref_ab_virtual[1];
+
+            //extrapolação da corrente i1
+            extrapolar_k2(i1_ref_ab, i1_ref_ab_k2);
+}
+
+void estimarValores_k1(void){
+
+// =========================================== 12. Entrada do algoritmo de controle  ===================================================================
+
+    //---------------------------                 Estimando os valores em (K+1) do preditivo----------------------------------------------------------
+
+             Vk_ab[0] = Vdc * s_ab[passado][0];
+             Vk_ab[1] = Vdc * s_ab[passado][1];
+
+             i1_ab_k1[0] = (phi_1 * i1_ab[0]) + gama_1 * (Vk_ab[0] - vcap_ab[0]);
+             i1_ab_k1[1] = (phi_1 * i1_ab[1]) + gama_1 * (Vk_ab[1] - vcap_ab[1]);
+
+             i2_ab_k1[0] = (phi_2 * i2_ab[0]) + gama_2 * (vcap_ab[0] - Vg_ab[0]);
+             i2_ab_k1[1] = (phi_2 * i2_ab[1]) + gama_2 * (vcap_ab[1] - Vg_ab[1]);
+
+             //-------------------------------COM AMORTECIMENTO------------------------------------------------------------
+             vcap_ab_k1[0] = (phi_3 * vcap_ab[0]) + gama_3 * (i1_ab[0] - i2_ab[0]);
+             vcap_ab_k1[1] = (phi_3 * vcap_ab[1]) + gama_3 * (i1_ab[1] - i2_ab[1]);
+
+}
+
+int16_t calcularLinhaOtimizada(void){
+
+    volatile float g_op;
+    volatile float melhor_linha = 0;
+    volatile float gcap_alfa, gcap_beta;
+    volatile float g2_alfa, g2_beta, g1_alfa, g1_beta;
+    volatile int16_t gsa, gsb, gsc;
+    volatile float  g_k;
+    volatile int16_t linha;
+
+    g_op = INICIO_OPERACIONAL;
+
+    //---------------------------                 Estimando os valores em (K+2) do preditivo----------------------------------------------------------
+
+             for (linha = 0; linha < 8; linha++)
+             {
+
+                 //----------------------------------------Tensão de controle-------------------------------------------------------
+                 Vk_ab[0] = Vdc * s_ab[linha][0];
+                 Vk_ab[1] = Vdc * s_ab[linha][1];
+
+                 //---------------------------------------- Predição (k+2) -------------------------------------------------------------
+
+                 i1_ab_k2[0] = (phi_1 * i1_ab_k1[0]) + gama_1 * (Vk_ab[0] - vcap_ab_k1[0]);
+                 i1_ab_k2[1] = (phi_1 * i1_ab_k1[1]) + gama_1 * (Vk_ab[1] - vcap_ab_k1[1]);
+
+                 i2_ab_k2[0] = (phi_2 * i2_ab_k1[0]) + gama_2 * (vcap_ab_k1[0] - Vg_ab_k1[0]);
+                 i2_ab_k2[1] = (phi_2 * i2_ab_k1[1]) + gama_2 * (vcap_ab_k1[1] - Vg_ab_k1[1]);
+
+                 //--------------------------------------COM AMORTECIMENTO-----------------------------------------------------
+                 vcap_ab_k2[0] = (phi_3 * vcap_ab_k1[0]) + gama_3 * (i1_ab_k1[0] - i2_ab_k1[0]);
+                 vcap_ab_k2[1] = (phi_3 * vcap_ab_k1[1]) + gama_3 * (i1_ab_k1[1] - i2_ab_k1[1]);
+
+    //--------------------------------- calculando as variaveis do custo para ser comparado no preditivo ----------------------------------
+                 g2_alfa = (i2_ab_k2[0] - i2_ref_ab_k2[0]) * (i2_ab_k2[0] - i2_ref_ab_k2[0]);
+                 g2_beta = (i2_ab_k2[1] - i2_ref_ab_k2[1]) * (i2_ab_k2[1] - i2_ref_ab_k2[1]);
+
+                 g1_alfa = (i1_ab_k2[0] - i1_ref_ab_k2[0]) * (i1_ab_k2[0] - i1_ref_ab_k2[0]);
+                 g1_beta = (i1_ab_k2[1] - i1_ref_ab_k2[1]) * (i1_ab_k2[1] - i1_ref_ab_k2[1]);
+
+                 gcap_alfa = (vcap_ab_k2[0] - vcap_ref_ab_k2[0]) * (vcap_ab_k2[0] - vcap_ref_ab_k2[0]);
+                 gcap_beta = (vcap_ab_k2[1] - vcap_ref_ab_k2[1]) * (vcap_ab_k2[1] - vcap_ref_ab_k2[1]);
+
+                 gsa = (s_abc[linha][0] - s_abc[passado][0]) * (s_abc[linha][0] - s_abc[passado][0]);
+                 gsb = (s_abc[linha][1] - s_abc[passado][1]) * (s_abc[linha][1] - s_abc[passado][1]);
+                 gsc = (s_abc[linha][2] - s_abc[passado][2]) * (s_abc[linha][2] - s_abc[passado][2]);
+
+                 g_k = g_custo_i1 * (g1_alfa + g1_beta) + g_custo_vcap * (gcap_alfa + gcap_beta) + g_custo_i2 * (g2_alfa + g2_beta) +  g_custo_s * ((float) (gsa + gsb + gsc));
+
+
+                 if (g_k < g_op)
+                 {
+
+                     melhor_linha = linha;  // valor atual
+                     g_op = g_k;
+                 }
+
+             }
+
+             return melhor_linha;
+}
+
+void aplicarPWM(int16_t linha) {
+
+
+   pwm1 = s_abc[linha][0];
+   pwm2 = s_abc[linha][1];
+   pwm3 = s_abc[linha][2];
+
+}
+
 // Interrupção externa (XINT1 ou outro XINT ligado ao GPIO que recebe o PWM)
 __interrupt void INT_myGPIO0_XINT_ISR(void)
 {
@@ -452,5 +526,3 @@ __interrupt void INT_myCPUTIMER0_ISR(void)
     // Libera nova interrupção
     Interrupt_clearACKGroup(INT_myCPUTIMER0_INTERRUPT_ACK_GROUP);
 }
-
-
