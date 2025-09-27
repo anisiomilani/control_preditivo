@@ -29,6 +29,7 @@ volatile bool g_trip_clear = false;
 
 volatile uint32_t g_step_counter = 0;  // Contador de passos dentro do ciclo PWM
 volatile bool g_switch_on = false;           // Estado da chave (true = ligada)
+volatile bool g_switch = false;           // Estado da chave (true = ligada)
 volatile bool g_new_step_ready = false;     // Flag para novo passo de simulação
 //volatile float g_duty_cycle = 0.5f;          // Razão cíclica (entre 0 e 1)
 
@@ -167,7 +168,6 @@ void aplicarPWM(int16_t linha);
 volatile float P_ativa, Q_reativa;
 volatile uint32_t pwm1,pwm2,pwm3;
 
-
 void main(void)
 {
 
@@ -178,7 +178,7 @@ void main(void)
     Interrupt_initVectorTable();
     Board_init();
 
-    ePwm_TimeBase = EPWM_getTimeBasePeriod(EPWM0_BASE);
+    ePwm_TimeBase = EPWM_getTimeBasePeriod(myEPWM1_BASE);
     ePwm_MinDuty = (uint32_t) (0.95f * (float) ePwm_TimeBase);
     ePwm_MaxDuty = (uint32_t) (0.05f * (float) ePwm_TimeBase);
 
@@ -193,7 +193,7 @@ void main(void)
         //  EPWM_setCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A, cmp_Value);
         //   ePwm_curDuty = EPWM_getCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A);
 
-        //     if (g_new_step_ready)
+          //   if (g_new_step_ready)
         //      {
         //         g_new_step_ready = false;
 //----------------------------------------------------
@@ -497,9 +497,22 @@ int16_t calcularLinhaOtimizada(void){
 void aplicarPWM(int16_t linha) {
 
 
-   pwm1 = s_abc[linha][0];
-   pwm2 = s_abc[linha][1];
-   pwm3 = s_abc[linha][2];
+   pwm1 = s_abc[linha][0]; //braço A
+   pwm2 = s_abc[linha][1]; //braço B
+   pwm3 = s_abc[linha][2]; //braço C
+
+     // Braço A
+   EPWM_setActionQualifierContSWForceAction(myEPWM1_BASE,
+                                            EPWM_AQ_OUTPUT_A,
+                                            (EPWM_ActionQualifierSWOutput)(pwm1 ? EPWM_AQ_OUTPUT_HIGH : EPWM_AQ_OUTPUT_LOW));
+
+   EPWM_setActionQualifierContSWForceAction(myEPWM2_BASE,
+                                              EPWM_AQ_OUTPUT_A,
+                                              (EPWM_ActionQualifierSWOutput)(pwm2 ? EPWM_AQ_OUTPUT_HIGH : EPWM_AQ_OUTPUT_LOW));
+
+   EPWM_setActionQualifierContSWForceAction(myEPWM3_BASE,
+                                              EPWM_AQ_OUTPUT_A,
+                                              (EPWM_ActionQualifierSWOutput)(pwm3 ? EPWM_AQ_OUTPUT_HIGH : EPWM_AQ_OUTPUT_LOW));
 
 }
 
@@ -507,6 +520,7 @@ void aplicarPWM(int16_t linha) {
 __interrupt void INT_myGPIO0_XINT_ISR(void)
 {
     g_switch_on = GPIO_readPin(myGPIO0);
+    g_switch = GPIO_readPin(myGPIO1);
 
     Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
 }
