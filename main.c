@@ -7,7 +7,8 @@
 
 
 //ainda não esta sendo utilizado
-#define norm_DAC 4095.0f/(84.0f)
+#define norm_DAC 4095.0f/(30.0f)
+#define norm_ADC  (30.0f)/4095.0F
 #define norm_DAC_il 4095.0f/(8.4f)
 #define LIMIAR_REARME_ADC 40.0f
 
@@ -37,6 +38,12 @@ volatile bool g_new_step_ready = false;     // Flag para novo passo de simulação
 
 //------------------------------------------INICIO DO CONTROLE-------------------------------------------------------------------------
 
+#define MAX_ADC_EVENTS 10   // Limite máximo de eventos pendentes para evitar overflow
+
+//tenho que configurar é o (tempo de amostragem adc/ tempo do main princial)* numero de leituras
+//numero de leituras sera 10
+
+volatile uint16_t adc_events = 0;  // Contador de leituras pendentes paara garantir que o main so execute após leitura
 
 //                  Constantes pré-calculadas para transformada de clark
 //-------------------------------------------------------------------------------------------------------
@@ -168,8 +175,15 @@ void aplicarPWM(int16_t linha);
 volatile float P_ativa, Q_reativa;
 volatile uint32_t pwm1,pwm2,pwm3;
 
+volatile uint16_t dacVal_il,dacVal;
+volatile float  g_vout_sim, g_i1,g_i2,i_out_sim;
+
+volatile float loop_start=0, loop_end=0, loop_time=0;
+ volatile float t_diff  = 0;
+
 void main(void)
 {
+
 
     // Inicialização dos periféricos
 
@@ -188,48 +202,72 @@ void main(void)
     while (1)
     {
 
+        loop_start = CPUTimer_getTimerCount(CPUTIMER0_BASE); // registra início do loop
 
         //  cmp_Value = (uint32_t) (g_duty_cycle * ePwm_TimeBase);
         //  EPWM_setCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A, cmp_Value);
         //   ePwm_curDuty = EPWM_getCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A);
 
-          //   if (g_new_step_ready)
-        //      {
-        //         g_new_step_ready = false;
-//----------------------------------------------------
-        passado = linha_op[0];
-        linha_op[1] = linha_op[0];
-        linha_op[0] = 1000;
-      //  g_op = INICIO_OPERACIONAL;
+   //     if (adc_events > 0)
+   //     {
+  //          adc_events--;  // processa apenas uma leitura por iteração
 
-        redefinindo_vetores_alfa_beta();
-        // extrapolação tensão PAC
-        extrapolar_k1(Vg_ab, Vg_ab_k1);
-        extrapolar_k2(Vg_ab, Vg_ab_k2);
-        aplicarFiltroSOGI();
-        calcularSequencias();
-        gerarCorrenteReferenciaI2();
-        gerarCorrenteVirtual();
-        calcularPotencias();
-        gerarReferenciaVcap();
-        gerarReferenciaI1();
-        estimarValores_k1();
-        linha_op[0] = calcularLinhaOtimizada();
-        aplicarPWM(linha_op[0]);
+            int temp = (int) roundf(g_vout_sim * norm_DAC);
+
+            temp = (temp > 4095) ? 4095 : temp;
+            dacVal_il = (uint16_t) temp;
+            DAC_setShadowValue(DAC0_BASE, dacVal_il);
+
+            int temp1 = (int) roundf((i_out_sim * norm_DAC));
+
+            temp1 = (temp1 > 4095) ? 4095 : temp1;
+            dacVal = (uint16_t) temp1;
+            DAC_setShadowValue(DAC1_BASE, dacVal);
+//----------------------------------------------------
+            passado = linha_op[0];
+            linha_op[1] = linha_op[0];
+            linha_op[0] = 1000;
+            //  g_op = INICIO_OPERACIONAL;
+
+            redefinindo_vetores_alfa_beta();
+            // extrapolação tensão PAC
+            extrapolar_k1(Vg_ab, Vg_ab_k1);
+            extrapolar_k2(Vg_ab, Vg_ab_k2);
+            aplicarFiltroSOGI();
+            calcularSequencias();
+            gerarCorrenteReferenciaI2();
+            gerarCorrenteVirtual();
+            calcularPotencias();
+            gerarReferenciaVcap();
+            gerarReferenciaI1();
+            estimarValores_k1();
+            linha_op[0] = calcularLinhaOtimizada();
+            aplicarPWM(linha_op[0]);
 
 //--------------------------------------------------------
-        /*
-         if (g_trip_clear)
-         {
-         if ((EPWM_getTripZoneFlagStatus(EPWM0_BASE) & EPWM_TZ_FLAG_OST) != 0U)
-         {
-         EPWM_clearTripZoneFlag(EPWM0_BASE,EPWM_TZ_INTERRUPT | EPWM_TZ_FLAG_OST | EPWM_TZ_FLAG_DCAEVT1);
+            /*
+             if (g_trip_clear)
+             {
+             if ((EPWM_getTripZoneFlagStatus(EPWM0_BASE) & EPWM_TZ_FLAG_OST) != 0U)
+             {
+             EPWM_clearTripZoneFlag(EPWM0_BASE,EPWM_TZ_INTERRUPT | EPWM_TZ_FLAG_OST | EPWM_TZ_FLAG_DCAEVT1);
 
+             }
+             //g_trip_clear  = 0;
+             }
+             */
+   //     }
+        // Marca fim
+        loop_end = CPUTimer_getTimerCount(CPUTIMER0_BASE);
+
+          if(loop_start >= loop_end) {
+              loop_time = (loop_start - loop_end);
+         } else {
+             loop_time = (loop_start + (0xFFFFFFFF - loop_end + 1));
          }
-         //g_trip_clear  = 0;
-         }
-         */
-        //  }
+
+         loop_time = (loop_time / 200e6)* 1e6;; // tempo em segundos
+
     }
 }
 
@@ -539,4 +577,27 @@ __interrupt void INT_myCPUTIMER0_ISR(void)
 
     // Libera nova interrupção
     Interrupt_clearACKGroup(INT_myCPUTIMER0_INTERRUPT_ACK_GROUP);
+}
+
+// será realizado a leitura de todas as variaveis ADC
+
+__interrupt void INT_ADC0_1_ISR(void)
+{
+
+    g_i1 = ADC_readResult(ADC0_RESULT_BASE, ADC0_SOC0);
+    i1_a = g_i1 * norm_ADC;
+
+    g_i2 = ADC_readResult(ADC1_RESULT_BASE, ADC1_SOC1);
+    i1_b = g_i2 * norm_ADC;
+
+    // Incrementa contador com limite para evitar overflow
+    if(adc_events < MAX_ADC_EVENTS)
+        adc_events++;
+
+
+    ADC_clearInterruptStatus(ADC0_BASE, ADC_INT_NUMBER1);
+    ADC_clearInterruptStatus(ADC1_BASE, ADC_INT_NUMBER1);
+    Interrupt_clearACKGroup(INT_ADC0_1_INTERRUPT_ACK_GROUP);
+
+
 }
