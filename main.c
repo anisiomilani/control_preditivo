@@ -6,19 +6,6 @@
 #include "funcoes.h"
 
 
-//ainda não esta sendo utilizado
-#define norm_DAC 4095.0f/(30.0f)
-#define norm_ADC  (30.0f)/4095.0F
-#define norm_DAC_il 4095.0f/(8.4f)
-#define LIMIAR_REARME_ADC 40.0f
-
-
-// varaveis criadas para  PWM
-uint32_t ePwm_TimeBase;
-uint32_t ePwm_MinDuty;
-uint32_t ePwm_MaxDuty;
-uint32_t ePwm_curDuty;
-
 volatile bool g_trip_clear = false;
 
 // Definições de Constantes
@@ -35,15 +22,15 @@ volatile bool g_new_step_ready = false;     // Flag para novo passo de simulação
 //volatile float g_duty_cycle = 0.5f;          // Razão cíclica (entre 0 e 1)
 
 
-
 //------------------------------------------INICIO DO CONTROLE-------------------------------------------------------------------------
 
-#define MAX_ADC_EVENTS 10   // Limite máximo de eventos pendentes para evitar overflow
+volatile bool adc_flag  = false;      // Flag para novo passo de simulação
 
-//tenho que configurar é o (tempo de amostragem adc/ tempo do main princial)* numero de leituras
-//numero de leituras sera 10
+#define VREF_DAC_ADC 50.0f
 
-volatile uint16_t adc_events = 0;  // Contador de leituras pendentes paara garantir que o main so execute após leitura
+#define norm_DAC 4095.0f/VREF_DAC_ADC
+#define norm_ADC  VREF_DAC_ADC/4095.0f
+
 
 //                  Constantes pré-calculadas para transformada de clark
 //-------------------------------------------------------------------------------------------------------
@@ -175,11 +162,8 @@ void aplicarPWM(int16_t linha);
 volatile float P_ativa, Q_reativa;
 volatile uint32_t pwm1,pwm2,pwm3;
 
-volatile uint16_t dacVal_il,dacVal;
-volatile float  g_vout_sim, g_i1,g_i2,i_out_sim;
+uint16_t  g_vout_sim, i_out_sim, g_i1_a, g_i1_b, g_i1_c, g_i2_a, g_i2_b, g_i2_c, g_cap_a, g_cap_b, g_cap_c, g_vcc;
 
-volatile float loop_start=0, loop_end=0, loop_time=0;
- volatile float t_diff  = 0;
 
 void main(void)
 {
@@ -192,38 +176,37 @@ void main(void)
     Interrupt_initVectorTable();
     Board_init();
 
-    ePwm_TimeBase = EPWM_getTimeBasePeriod(myEPWM1_BASE);
-    ePwm_MinDuty = (uint32_t) (0.95f * (float) ePwm_TimeBase);
-    ePwm_MaxDuty = (uint32_t) (0.05f * (float) ePwm_TimeBase);
-
     EINT;
     ERTM;
 
     while (1)
     {
 
-        loop_start = CPUTimer_getTimerCount(CPUTIMER0_BASE); // registra início do loop
+       if (adc_flag)
+       {
+           adc_flag = false;
 
-        //  cmp_Value = (uint32_t) (g_duty_cycle * ePwm_TimeBase);
-        //  EPWM_setCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A, cmp_Value);
-        //   ePwm_curDuty = EPWM_getCounterCompareValue(EPWM0_BASE, EPWM_COUNTER_COMPARE_A);
 
-   //     if (adc_events > 0)
-   //     {
-  //          adc_events--;  // processa apenas uma leitura por iteração
 
-            int temp = (int) roundf(g_vout_sim * norm_DAC);
+            float vout_test = g_vout_sim;
+            if(vout_test < 0.0f) vout_test = 0.0f;
+            if(vout_test > VREF_DAC_ADC) vout_test = VREF_DAC_ADC;
 
-            temp = (temp > 4095) ? 4095 : temp;
-            dacVal_il = (uint16_t) temp;
+            uint16_t dacVal_il = (uint16_t) roundf(vout_test * norm_DAC);
+            dacVal_il = (dacVal_il > 4095) ? 4095 :  dacVal_il;
             DAC_setShadowValue(DAC0_BASE, dacVal_il);
 
-            int temp1 = (int) roundf((i_out_sim * norm_DAC));
 
-            temp1 = (temp1 > 4095) ? 4095 : temp1;
-            dacVal = (uint16_t) temp1;
+            float vout_test_2 = i_out_sim;
+            if(vout_test_2 < 0.0f) vout_test_2 = 0.0f;
+            if(vout_test_2 > VREF_DAC_ADC) vout_test_2 = VREF_DAC_ADC;
+
+            uint16_t dacVal = (uint16_t) roundf(vout_test_2 * norm_DAC);
+            dacVal = (dacVal > 4095) ? 4095 :  dacVal;
             DAC_setShadowValue(DAC1_BASE, dacVal);
+
 //----------------------------------------------------
+            /*
             passado = linha_op[0];
             linha_op[1] = linha_op[0];
             linha_op[0] = 1000;
@@ -243,7 +226,7 @@ void main(void)
             estimarValores_k1();
             linha_op[0] = calcularLinhaOtimizada();
             aplicarPWM(linha_op[0]);
-
+*/
 //--------------------------------------------------------
             /*
              if (g_trip_clear)
@@ -256,17 +239,8 @@ void main(void)
              //g_trip_clear  = 0;
              }
              */
-   //     }
-        // Marca fim
-        loop_end = CPUTimer_getTimerCount(CPUTIMER0_BASE);
+      }
 
-          if(loop_start >= loop_end) {
-              loop_time = (loop_start - loop_end);
-         } else {
-             loop_time = (loop_start + (0xFFFFFFFF - loop_end + 1));
-         }
-
-         loop_time = (loop_time / 200e6)* 1e6;; // tempo em segundos
 
     }
 }
@@ -566,38 +540,63 @@ __interrupt void INT_myGPIO0_XINT_ISR(void)
 __interrupt void INT_myCPUTIMER0_ISR(void)
 {
     // Atualiza contador
-    g_step_counter++;
+//    g_step_counter++;
 
     // Reinicia no fim do ciclo PWM
-    if (g_step_counter >= N_STEPS_PER_CYCLE)
-        g_step_counter = 0;
+//    if (g_step_counter >= N_STEPS_PER_CYCLE)
+//        g_step_counter = 0;
 
     // Sinaliza para o loop principal que deve simular o próximo passo
-    g_new_step_ready = true;
+//    g_new_step_ready = true;
 
+ //   enviar_vetor_para_DAC();
+//   CPUTimer_clearOverflowFlag(myCPUTIMER0_BASE);
     // Libera nova interrupção
     Interrupt_clearACKGroup(INT_myCPUTIMER0_INTERRUPT_ACK_GROUP);
 }
 
 // será realizado a leitura de todas as variaveis ADC
 
-__interrupt void INT_ADC0_1_ISR(void)
+__interrupt void INT_ADC_C_1_ISR(void)
 {
 
-    g_i1 = ADC_readResult(ADC0_RESULT_BASE, ADC0_SOC0);
-    i1_a = g_i1 * norm_ADC;
+    // ADCA
 
-    g_i2 = ADC_readResult(ADC1_RESULT_BASE, ADC1_SOC1);
-    i1_b = g_i2 * norm_ADC;
+    g_i1_a = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC0);
+    g_i1_b = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC1);
+    g_i1_c = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC2);
+    g_vcc = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC3);
 
-    // Incrementa contador com limite para evitar overflow
-    if(adc_events < MAX_ADC_EVENTS)
-        adc_events++;
+    i1_a = g_i1_a * norm_ADC;
+    i1_b = g_i1_b * norm_ADC;
+    i1_c = g_i1_c * norm_ADC;
+   // Vdc = g_vcc * norm_ADC;
+
+    // ADCB
+    g_i2_a = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC4);
+    g_i2_b = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC5);
+    g_i2_c = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC6);
+
+    i2_a = g_i2_a * norm_ADC;
+    i2_b = g_i2_b * norm_ADC;
+    i2_c = g_i2_c * norm_ADC;
 
 
-    ADC_clearInterruptStatus(ADC0_BASE, ADC_INT_NUMBER1);
-    ADC_clearInterruptStatus(ADC1_BASE, ADC_INT_NUMBER1);
-    Interrupt_clearACKGroup(INT_ADC0_1_INTERRUPT_ACK_GROUP);
+    // ADCC
+    g_cap_a = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC7);
+    g_cap_b = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC8);
+    g_cap_c = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC9);
 
+    va_cap = g_cap_a * norm_ADC;
+    vb_cap = g_cap_b * norm_ADC;
+    vc_cap = g_cap_c * norm_ADC;
+
+    adc_flag  = true;
+
+
+    // Limpa a interrupção
+    ADC_clearInterruptStatus(ADC_C_BASE, ADC_INT_NUMBER1);
+    Interrupt_clearACKGroup(INT_ADC_C_1_INTERRUPT_ACK_GROUP);
 
 }
+
