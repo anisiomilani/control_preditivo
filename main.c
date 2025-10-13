@@ -7,15 +7,24 @@
 
 //------------------------------------------INICIO DO CONTROLE-------------------------------------------------------------------------
 
-volatile bool adc_flag = false;      // Flag para novo passo de simulaÁ„o
+volatile bool adc_flag = false;      // Flag para novo passo de simula√ß√£o
 
-#define VREF_DAC_ADC 50.0f
+// --------------------------------------- Configura√ß√µes de convers√£o ------------------------------------------------------------------
+// -----------------------------------
+#define ADC_RESOLUTION     4095.0f
+#define VREF_ADC     2.5f           // refer√™ncia real do ADC
+#define DIV_FACTOR 100.0f
+#define DAC_RESOLUTION  4095.0f     // 12 bits
+#define VREF_DAC        2.5f        // refer√™ncia real do DAC (ou 3.3f)
+#define VMAX_SINAL   250.0f      // pico do sinal real (ex: ¬±250V)
 
-#define norm_DAC 4095.0f/VREF_DAC_ADC
-#define norm_ADC  VREF_DAC_ADC/4095.0f
 
+#define CALIB_TENSAO 0.92f      // CALIBRADOR PARA 200v
+#define CALIB_CORRENTE 0.97f    // calibrador para 30A
 
-// -------------------------------- Constantes prÈ-calculadas para transformada de clark -----------------------------------------------
+#define norm_ADC  (84.0f)/4095.0F
+#define norm_DAC 4095.0f/(84.0f)
+// -------------------------------- Constantes pr√©-calculadas para transformada de clark -----------------------------------------------
 
 #define TRES_DIV_2 1.5f                                  //    3/2
 #define DOIS_DIV_3 0.6666667f                           //     2/3
@@ -40,8 +49,8 @@ volatile bool adc_flag = false;      // Flag para novo passo de simulaÁ„o
 
 //----------------------------------- Vetor chaveamento alfa/beta e ABC ------------------------------------------------------------------
 
-#define ZERO 0.0
-#define UM 1.0
+#define ZERO 0
+#define UM 1
 
 static const float s_ab[8][2] =     { {ZERO,          ZERO },
                                     {DOIS_DIV_3,    ZERO },
@@ -108,7 +117,7 @@ volatile float P_ref = 5000.0f;
 volatile float Q_ref = 0.0f;
 volatile float P_ativa, Q_reativa;
 
-// -------------------------------- Vetores para armazenar posiÁıes -------------------------------------------------------------------------
+// -------------------------------- Vetores para armazenar posi√ß√µes -------------------------------------------------------------------------
 
 volatile float Vg_ab[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 volatile float i1_ab[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -137,7 +146,7 @@ volatile float vcap_ab_k2[2] = { 0.0f, 0.0f };
 volatile float Vk_ab[2];
 #define INICIO_OPERACIONAL 1e15f
 
-// --------------------------------------- funÁoes esecificas ara cada parte do controle ---------------------------------------------------
+// --------------------------------------- fun√ßoes esecificas ara cada parte do controle ---------------------------------------------------
 
 void redefinindo_vetores_alfa_beta(void);
 void aplicarFiltroSOGI(void);
@@ -150,15 +159,44 @@ void gerarReferenciaI1(void);
 void estimarValores_k1(void);
 int16_t calcularLinhaOtimizada(void);
 void aplicarPWM(int16_t linha);
+uint16_t valor_para_DAC(float valor_volts);
+static inline float adc_to_volts(uint16_t adc_code);
 
-volatile float g_vout_sim, i_out_sim;
+//---------------------------------------------- VARIAVEIS DE LEITURA ADC ANTES DE CONVERTER ------------------------------------------------
+
+uint16_t g_i1_a, g_i1_b, g_i1_c, g_i2_a, g_i2_b, g_i2_c, g_cap_a, g_cap_b, g_cap_c, g_vcc;
+
+
+
+float corrente = 35.0f, tensao = 200.0f;           // tens√£o desejada
+
 uint16_t g_switch_on,g_switch_off;
 uint32_t pwm1, pwm2, pwm3;
+
+
+float valor_envio = 123.4f;  // coloque aqui qualquer valor entre -250 e +250
+uint16_t codigo_dac;
+volatile float valor_retorno,tempo_us;
+uint16_t corrente_corrigida;
+uint16_t tensao_corrigida;
+
+
+uint32_t inicio, fim;
+volatile float periodo_us = 0.0f;
+volatile uint32_t ultimo_contador = 0;
+#define TIMER_PERIOD_TICKS 5000.0f
+volatile uint32_t ultimo_adc_ticks = 0;    // Guarda o contador da √∫ltima ISR
+volatile float periodo_adc_us = 0.0f;      // Guarda o per√≠odo em microssegundos
+
+#define MAX_SAMPLES 1000       // n√∫mero m√°ximo de registros
+volatile uint8_t toggle_buffer[MAX_SAMPLES]; // guarda 0 ou 1
+volatile uint16_t toggle_index = 0;          // √≠ndice atual
+volatile bool adc_toggle = false;           // toggle atual
 
 void main(void)
 {
 
-    // InicializaÁ„o dos perifÈricos
+    // Inicializa√ß√£o dos perif√©ricos
 
     Device_init();
     Interrupt_initModule();
@@ -168,38 +206,63 @@ void main(void)
     EINT;
     ERTM;
 
+
     while (1)
     {
-
         if (adc_flag)
         {
+
             adc_flag = false;
 
 
+            // Alterna o toggle
+            adc_toggle = !adc_toggle;
 
-            // teste de leitura ADC VERIFICAR SE ESTA GERANDO A FLAG POR INTERRUP«√O AP”S A ULTIMA CONVERSAO NO ADC C
+            // Salva o estado do toggle no vetor (0 ou 1)
+            toggle_buffer[toggle_index] = adc_toggle ? 1 : 0;
+            toggle_index++;
 
-            float vout_test = g_vout_sim;
-            if (vout_test < 0.0f)
-                vout_test = 0.0f;
-            if (vout_test > VREF_DAC_ADC)
-                vout_test = VREF_DAC_ADC;
+            // Se chegar no final, volta para o in√≠cio (ou para de registrar)
+            if (toggle_index >= MAX_SAMPLES)
+            {
+                toggle_index = 0; // sobrescreve os dados antigos (circular)
+                // ou, se quiser parar: toggle_index = MAX_SAMPLES - 1;
+            }
 
-            uint16_t dacVal_il = (uint16_t) roundf(vout_test * norm_DAC);
-            dacVal_il = (dacVal_il > 4095) ? 4095 : dacVal_il;
-            DAC_setShadowValue(DAC0_BASE, dacVal_il);
 
-            float vout_test_2 = i_out_sim;
-            if (vout_test_2 < 0.0f)
-                vout_test_2 = 0.0f;
-            if (vout_test_2 > VREF_DAC_ADC)
-                vout_test_2 = VREF_DAC_ADC;
+//-------------teste envio DAC---------------------------------------------------------------------------------
 
-            uint16_t dacVal = (uint16_t) roundf(vout_test_2 * norm_DAC);
-            dacVal = (dacVal > 4095) ? 4095 : dacVal;
-            DAC_setShadowValue(DAC1_BASE, dacVal);
+            corrente_corrigida = valor_para_DAC(corrente);  // apenas calcula o c√≥digo DAC
+            DAC_setShadowValue(DAC0_BASE, corrente_corrigida);
 
-//----------------------------------------------------
+            tensao_corrigida = valor_para_DAC(tensao);  // apenas calcula o c√≥digo DAC
+            DAC_setShadowValue(DAC1_BASE, tensao_corrigida);
+
+            codigo_dac = valor_para_DAC(valor_envio);
+            valor_retorno = adc_to_volts(codigo_dac);
+//------------------------------------------------------------------------------------------------------------
+
+
+                  // Convers√£o para tens√£o real ADC
+
+                  // --------------------------------------
+                 i1_a = adc_to_volts(g_i1_a);
+                 i1_b = adc_to_volts(g_i1_b);
+                 i1_c = adc_to_volts(g_i1_c);
+
+
+                 i2_a = adc_to_volts(g_i2_a);
+                 i2_b = adc_to_volts(g_i2_b);
+                 i2_c = adc_to_volts(g_i2_c);
+
+                 va_cap = adc_to_volts(g_cap_a);
+                 vb_cap = adc_to_volts(g_cap_b);
+                 vc_cap = adc_to_volts(g_cap_c);
+
+                 // tenho que colocar depois para Vdc
+                 Vdc = adc_to_volts(g_vcc);
+
+ //--------------------------------------------------------------------------
 
              passado = linha_op[0];
              linha_op[1] = linha_op[0];
@@ -251,8 +314,8 @@ void redefinindo_vetores_alfa_beta(void)
     ClarkeTransform(i2_a, i2_b, i2_c, &i2_alfa, &i2_beta);
 
 // ========================================== 2. Redefinindo as variaveis para vetores =========================================================
-    // operador 0 È para PAR
-    // operador 1 È para IMPAR
+    // operador 0 √© para PAR
+    // operador 1 √© para IMPAR
 
     atualizar_valor_par_impar_vetor_6(Vg_ab, 0, Vg_ab[0]);
     atualizar_valor_par_impar_vetor_6(Vg_ab, 1, Vg_ab[1]);
@@ -301,7 +364,7 @@ void aplicarFiltroSOGI(void)
 void calcularSequencias(void)
 {
 
-// =========================================== 5. SequÍncia positiva e negativa =============================================================
+// =========================================== 5. Sequ√™ncia positiva e negativa =============================================================
 
     Vg_ab_filtrado_pos[0] = HALF * (Vg_ab_filtrado[0] - Vg_ab_q_filtrado[1]);
     Vg_ab_filtrado_pos[1] = HALF * (Vg_ab_filtrado[1] + Vg_ab_q_filtrado[0]);
@@ -325,7 +388,7 @@ void gerarCorrenteReferenciaI2(void)
     float i2_ref_alfa_pos, i2_ref_alfa_neg;
     float i2_ref_beta_pos, i2_ref_beta_neg;
 
-    // Ganhos, potÍncias, controle
+    // Ganhos, pot√™ncias, controle
     float D, E, inv_D, inv_E;
 
     // =========================================== 7. Utilizando as sequencia para determinar a referencia conforme i2 ===============================
@@ -339,13 +402,13 @@ void gerarCorrenteReferenciaI2(void)
     D = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado) - K * (Vg_ab_filtrado_neg_0_quadrado + Vg_ab_filtrado_neg_1_quadrado);
     E = (Vg_ab_filtrado_pos_0_quadrado + Vg_ab_filtrado_pos_1_quadrado) + K * (Vg_ab_filtrado_neg_0_quadrado + Vg_ab_filtrado_neg_1_quadrado);
 
-    // Proteger contra divis„o por zero
+    // Proteger contra divis√£o por zero
     if (D == ZERO)
         D = LIMITAR_ZERO;
     if (E == ZERO)
         E = LIMITAR_ZERO;
 
-    // Fazer sÛ uma divis„o para cada
+    // Fazer s√≥ uma divis√£o para cada
     inv_D = 1.0f / D;
     inv_E = 1.0f / E;
 
@@ -360,7 +423,7 @@ void gerarCorrenteReferenciaI2(void)
     i2_ref_ab[0] = i2_ref_alfa_pos + i2_ref_alfa_neg;
     i2_ref_ab[1] = i2_ref_beta_pos + i2_ref_beta_neg;
 
-    // ExtrapolaÁ„o da corrente de referencia i2
+    // Extrapola√ß√£o da corrente de referencia i2
 
     extrapolar_k2(i2_ref_ab, i2_ref_ab_k2);
 }
@@ -396,7 +459,7 @@ void gerarReferenciaVcap(void)
     derivada_i2[0] = (i2_ref_ab_virtual[0] - i2_ref_ab_virtual[2]) * INV_TS;
     derivada_i2[1] = (i2_ref_ab_virtual[1] - i2_ref_ab_virtual[3]) * INV_TS;
 
-    //  Limitando a derivada para remover picos na transiÁ„o
+    //  Limitando a derivada para remover picos na transi√ß√£o
 
     derivada_i2[0] = (derivada_i2[0] > LIMITADOR_UM)  ?  LIMITADOR_UM : derivada_i2[0];
     derivada_i2[0] = (derivada_i2[0] < -LIMITADOR_UM) ? -LIMITADOR_UM : derivada_i2[0];
@@ -408,7 +471,7 @@ void gerarReferenciaVcap(void)
     vcap_ref_ab[0] = Vg_ab[0] + Lg * derivada_i2[0] + rg * i2_ref_ab_virtual[0];
     vcap_ref_ab[1] = Vg_ab[1] + Lg * derivada_i2[1] + rg * i2_ref_ab_virtual[1];
 
-    //extrapolaÁ„o da tens„o no capacitor
+    //extrapola√ß√£o da tens√£o no capacitor
     extrapolar_k2(vcap_ref_ab, vcap_ref_ab_k2);
 }
 
@@ -423,7 +486,7 @@ void gerarReferenciaI1(void)
     i1_ref_ab[0] = const_5 * (vcap_ref_ab[0] - vcap_ref_ab[2]) + (vcap_ref_ab[0] * INV_RV) + i2_ref_ab_virtual[0];
     i1_ref_ab[1] = const_5 * (vcap_ref_ab[1] - vcap_ref_ab[3]) + (vcap_ref_ab[1] * INV_RV) + i2_ref_ab_virtual[1];
 
-    //extrapolaÁ„o da corrente i1
+    //extrapola√ß√£o da corrente i1
     extrapolar_k2(i1_ref_ab, i1_ref_ab_k2);
 }
 
@@ -467,11 +530,11 @@ int16_t calcularLinhaOtimizada(void)
     for (linha = 0; linha < 8; linha++)
     {
 
-        //--------------------------------------- Tens„o de controle-------------------------------------------------------
+        //--------------------------------------- Tens√£o de controle-------------------------------------------------------
         Vk_ab[0] = Vdc * s_ab[linha][0];
         Vk_ab[1] = Vdc * s_ab[linha][1];
 
-        //---------------------------------------- PrediÁ„o (k+2) ----------------------------------------------------------
+        //---------------------------------------- Predi√ß√£o (k+2) ----------------------------------------------------------
 
         i1_ab_k2[0] = (phi_1 * i1_ab_k1[0]) + gama_1 * (Vk_ab[0] - vcap_ab_k1[0]);
         i1_ab_k2[1] = (phi_1 * i1_ab_k1[1]) + gama_1 * (Vk_ab[1] - vcap_ab_k1[1]);
@@ -518,13 +581,14 @@ int16_t calcularLinhaOtimizada(void)
 
 void aplicarPWM(int16_t linha)
 {
+
  //   uint32_t pwm1, pwm2, pwm3;
 
-    pwm1 = s_abc[linha][0]; //braÁo A
-    pwm2 = s_abc[linha][1]; //braÁo B
-    pwm3 = s_abc[linha][2]; //braÁo C
+    pwm1 = s_abc[linha][0]; //bra√ßo A
+    pwm2 = s_abc[linha][1]; //bra√ßo B
+    pwm3 = s_abc[linha][2]; //bra√ßo C
 
-    // BraÁo A
+    // Bra√ßo A
     EPWM_setActionQualifierContSWForceAction( myEPWM1_BASE, EPWM_AQ_OUTPUT_A, (EPWM_ActionQualifierSWOutput)
                                                                               (pwm1 ? EPWM_AQ_OUTPUT_HIGH : EPWM_AQ_OUTPUT_LOW));
 
@@ -536,7 +600,59 @@ void aplicarPWM(int16_t linha)
 
 }
 
-// InterrupÁ„o externa (XINT1 ou outro XINT ligado ao GPIO que recebe o PWM)
+//---------------- Convers√£o ADC ‚Üí Volts ----------------
+static inline float adc_to_volts(uint16_t adc_code)
+{
+    /*
+    // Converte ADC ‚Üí tens√£o no pino
+    float v_adc_pin = ((float)adc_code / ADC_RESOLUTION) * VREF_ADC;
+
+    // Converte para valor real, considerando mapeamento bipolar e divisor
+    float valor_volts = ((v_adc_pin / (VREF_ADC / 2.0f)) - 1.0f)*VMAX_SINAL;
+
+    return valor_volts;
+*/
+    // Corrige offset e aplica ganho em contagem ADC
+      int adc_offset = 185;
+      int adc_corr = adc_code - adc_offset;
+
+      if (adc_corr >= 2048) { // faixa positiva
+          float ganho_pos = 0.857f;
+          adc_corr = 2048 + (adc_corr - 2048) * ganho_pos;
+      } else { // faixa negativa
+          float ganho_neg = 0.766f;
+          adc_corr = 2048 + (adc_corr - 2048) * ganho_neg;
+      }
+
+      // Converte para volts depois
+      float v_adc_pin = ((float)adc_corr / ADC_RESOLUTION) * VREF_ADC;
+      float valor_volts = ((v_adc_pin / (VREF_ADC / 2.0f)) - 1.0f) * VMAX_SINAL;
+
+      return valor_volts;
+
+}
+
+//---------------- Convers√£o Volts ‚Üí DAC ----------------
+uint16_t valor_para_DAC(float valor_volts)
+{
+    // Limita tens√£o ¬±VMAX
+    if (valor_volts >  VMAX_SINAL) valor_volts =  VMAX_SINAL;
+    if (valor_volts < -VMAX_SINAL) valor_volts = -VMAX_SINAL;
+
+    // Aplica divisor f√≠sico
+    float v_dac_pin = (valor_volts / VMAX_SINAL + 1.0f) * (VREF_DAC / 2.0f);
+
+    // C√≥digo DAC
+    uint16_t dac_code = (uint16_t)((v_dac_pin / VREF_DAC) * DAC_RESOLUTION + 0.5f);
+
+    if (dac_code > DAC_RESOLUTION)
+        dac_code = (uint16_t)DAC_RESOLUTION;
+
+    return dac_code;
+}
+
+
+// Interrup√ß√£o externa (XINT1 ou outro XINT ligado ao GPIO que recebe o PWM)
 __interrupt void INT_myGPIO0_XINT_ISR(void)
 {
 
@@ -548,6 +664,24 @@ __interrupt void INT_myGPIO0_XINT_ISR(void)
 
 __interrupt void INT_myCPUTIMER0_ISR(void)
 {
+/*
+uint32_t contador_atual = CPUTimer_getTimerCount(CPUTIMER0_BASE);
+if (ultimo_contador != 0)
+{
+    int32_t delta;
+    if (contador_atual > ultimo_contador)
+        delta = (int32_t)(TIMER_PERIOD_TICKS - (contador_atual - ultimo_contador));
+    else
+        delta = (int32_t)(ultimo_contador - contador_atual);
+
+    periodo_us = (float)delta / 200.0f; // CPU = 200 MHz
+}
+ultimo_contador = contador_atual;
+
+        // Limpa flag da interrup√ß√£o
+        CPUTimer_clearOverflowFlag(CPUTIMER0_BASE);
+        Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
+*/
     // Atualiza contador
 //    g_step_counter++;
 
@@ -555,54 +689,60 @@ __interrupt void INT_myCPUTIMER0_ISR(void)
 //    if (g_step_counter >= N_STEPS_PER_CYCLE)
 //        g_step_counter = 0;
 
-    // Sinaliza para o loop principal que deve simular o prÛximo passo
+    // Sinaliza para o loop principal que deve simular o pr√≥ximo passo
 //    g_new_step_ready = true;
 
  //   enviar_vetor_para_DAC();
 //   CPUTimer_clearOverflowFlag(myCPUTIMER0_BASE);
-    // Libera nova interrupÁ„o
+    // Libera nova interrup√ß√£o
     Interrupt_clearACKGroup(INT_myCPUTIMER0_INTERRUPT_ACK_GROUP);
 }
 
-// ser· realizado a leitura de todas as variaveis ADC
+// ser√° realizado a leitura de todas as variaveis ADC
 
 __interrupt void INT_ADC_C_1_ISR(void)
 {
-    uint16_t g_i1_a, g_i1_b, g_i1_c, g_i2_a, g_i2_b, g_i2_c, g_cap_a, g_cap_b, g_cap_c, g_vcc;
+    uint32_t atual = CPUTimer_getTimerCount(CPUTIMER0_BASE);
+    uint32_t delta_ticks;
+
+    // Calcula o tempo entre esta interrup√ß√£o e a anterior
+    if (ultimo_adc_ticks != 0)
+    {
+        if (atual <= ultimo_adc_ticks)
+            delta_ticks = ultimo_adc_ticks - atual;
+        else
+            delta_ticks = TIMER_PERIOD_TICKS - (atual - ultimo_adc_ticks); // corrige overflow
+
+        // Converte ticks para microssegundos
+        periodo_adc_us = (float)delta_ticks / 200.0f;   // CPU = 200 MHz ‚Üí 1 tick = 5 ns
+    }
+
+    ultimo_adc_ticks = atual; // Atualiza para a pr√≥xima medi√ß√£o
+
+
+
+
+ //   inicio = CPUTimer_getTimerCount(CPUTIMER0_BASE);
 
     // ADCA
-
     g_i1_a = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC0);
     g_i1_b = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC1);
     g_i1_c = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC2);
     g_vcc = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC3);
-
- //   i1_a = g_i1_a * norm_ADC;
- //   i1_b = g_i1_b * norm_ADC;
- //   i1_c = g_i1_c * norm_ADC;
- //   Vdc = g_vcc * norm_ADC;
 
     // ADCB
     g_i2_a = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC4);
     g_i2_b = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC5);
     g_i2_c = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC6);
 
-//    i2_a = g_i2_a * norm_ADC;
-//    i2_b = g_i2_b * norm_ADC;
-//    i2_c = g_i2_c * norm_ADC;
-
     // ADCC
     g_cap_a = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC7);
     g_cap_b = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC8);
     g_cap_c = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC9);
 
-//    va_cap = g_cap_a * norm_ADC;
-//    vb_cap = g_cap_b * norm_ADC;
-//    vc_cap = g_cap_c * norm_ADC;
-
     adc_flag = true;
 
-    // Limpa a interrupÁ„o
+    // Limpa a interrup√ß√£o
     ADC_clearInterruptStatus(ADC_C_BASE, ADC_INT_NUMBER1);
     Interrupt_clearACKGroup(INT_ADC_C_1_INTERRUPT_ACK_GROUP);
 
