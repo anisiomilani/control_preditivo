@@ -214,8 +214,7 @@ void main(void)
 
             adc_flag = false;
 
-
-            // Alterna o toggle
+           // Alterna o toggle
             adc_toggle = !adc_toggle;
 
             // Salva o estado do toggle no vetor (0 ou 1)
@@ -230,6 +229,7 @@ void main(void)
             }
 
 
+
 //-------------teste envio DAC---------------------------------------------------------------------------------
 
             corrente_corrigida = valor_para_DAC(corrente);  // apenas calcula o código DAC
@@ -241,7 +241,6 @@ void main(void)
             codigo_dac = valor_para_DAC(valor_envio);
             valor_retorno = adc_to_volts(codigo_dac);
 //------------------------------------------------------------------------------------------------------------
-
 
                   // Conversão para tensão real ADC
 
@@ -613,14 +612,14 @@ static inline float adc_to_volts(uint16_t adc_code)
     return valor_volts;
 */
     // Corrige offset e aplica ganho em contagem ADC
-      int adc_offset = 185;
+      int adc_offset = 191;
       int adc_corr = adc_code - adc_offset;
 
       if (adc_corr >= 2048) { // faixa positiva
           float ganho_pos = 0.857f;
           adc_corr = 2048 + (adc_corr - 2048) * ganho_pos;
       } else { // faixa negativa
-          float ganho_neg = 0.766f;
+          float ganho_neg = 0.88f;
           adc_corr = 2048 + (adc_corr - 2048) * ganho_neg;
       }
 
@@ -643,7 +642,7 @@ uint16_t valor_para_DAC(float valor_volts)
     float v_dac_pin = (valor_volts / VMAX_SINAL + 1.0f) * (VREF_DAC / 2.0f);
 
     // Código DAC
-    uint16_t dac_code = (uint16_t)((v_dac_pin / VREF_DAC) * DAC_RESOLUTION + 0.5f);
+    uint16_t dac_code = (uint16_t)(((v_dac_pin / VREF_DAC) * DAC_RESOLUTION )+ 0.5f);
 
     if (dac_code > DAC_RESOLUTION)
         dac_code = (uint16_t)DAC_RESOLUTION;
@@ -693,7 +692,8 @@ ultimo_contador = contador_atual;
 //    g_new_step_ready = true;
 
  //   enviar_vetor_para_DAC();
-//   CPUTimer_clearOverflowFlag(myCPUTIMER0_BASE);
+
+   CPUTimer_clearOverflowFlag(myCPUTIMER0_BASE);
     // Libera nova interrupção
     Interrupt_clearACKGroup(INT_myCPUTIMER0_INTERRUPT_ACK_GROUP);
 }
@@ -718,9 +718,6 @@ __interrupt void INT_ADC_C_1_ISR(void)
     }
 
     ultimo_adc_ticks = atual; // Atualiza para a próxima medição
-
-
-
 
  //   inicio = CPUTimer_getTimerCount(CPUTIMER0_BASE);
 
