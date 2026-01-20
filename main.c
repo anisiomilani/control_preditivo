@@ -12,11 +12,11 @@ volatile bool adc_flag = false;      // Flag para novo passo de simulação
 // --------------------------------------- Configurações de conversão ------------------------------------------------------------------
 // -----------------------------------
 #define ADC_RESOLUTION     4095.0f
-#define VREF_ADC     2.5f           // referência real do ADC
+#define VREF_ADC     3.3f           // referência real do ADC
 #define DIV_FACTOR 100.0f
 #define DAC_RESOLUTION  4095.0f     // 12 bits
-#define VREF_DAC        2.5f        // referência real do DAC (ou 3.3f)
-#define VMAX_SINAL   250.0f      // pico do sinal real (ex: ±250V)
+#define VREF_DAC        3.3f        // referência real do DAC (ou 3.3f)
+#define VMAX_SINAL   200.0f      // pico do sinal real (ex: ±250V)
 
 
 #define CALIB_TENSAO 0.92f      // CALIBRADOR PARA 200v
@@ -164,7 +164,7 @@ static inline float adc_to_volts(uint16_t adc_code);
 
 //---------------------------------------------- VARIAVEIS DE LEITURA ADC ANTES DE CONVERTER ------------------------------------------------
 
-uint16_t g_i1_a, g_i1_b, g_i1_c, g_i2_a, g_i2_b, g_i2_c, g_cap_a, g_cap_b, g_cap_c, g_vcc;
+uint16_t g_i1_a, g_i1_b, g_i1_c, g_i2_a, g_i2_b, g_i2_c, g_cap_a, g_cap_b, g_cap_c, g_vcc, g_pac_a, g_pac_b, g_pac_c;
 
 
 
@@ -181,14 +181,14 @@ uint16_t corrente_corrigida;
 uint16_t tensao_corrigida;
 
 
-uint32_t inicio, fim;
-volatile float periodo_us = 0.0f;
-volatile uint32_t ultimo_contador = 0;
+//uint32_t inicio, fim;
+//volatile float periodo_us = 0.0f;
+//volatile uint32_t ultimo_contador = 0;
 #define TIMER_PERIOD_TICKS 5000.0f
 volatile uint32_t ultimo_adc_ticks = 0;    // Guarda o contador da última ISR
 volatile float periodo_adc_us = 0.0f;      // Guarda o período em microssegundos
 
-#define MAX_SAMPLES 1000       // número máximo de registros
+#define MAX_SAMPLES 100       // número máximo de registros
 volatile uint8_t toggle_buffer[MAX_SAMPLES]; // guarda 0 ou 1
 volatile uint16_t toggle_index = 0;          // índice atual
 volatile bool adc_toggle = false;           // toggle atual
@@ -247,12 +247,14 @@ void main(void)
                   // --------------------------------------
                  i1_a = adc_to_volts(g_i1_a);
                  i1_b = adc_to_volts(g_i1_b);
-                 i1_c = adc_to_volts(g_i1_c);
+                 i1_c = -(i1_a + i1_b);
 
 
                  i2_a = adc_to_volts(g_i2_a);
                  i2_b = adc_to_volts(g_i2_b);
-                 i2_c = adc_to_volts(g_i2_c);
+                 i2_c = -(i2_a + i2_b);
+
+                // float cap = corrige(g_cap_a);  testando correção das medidas
 
                  va_cap = adc_to_volts(g_cap_a);
                  vb_cap = adc_to_volts(g_cap_b);
@@ -260,6 +262,10 @@ void main(void)
 
                  // tenho que colocar depois para Vdc
                  Vdc = adc_to_volts(g_vcc);
+
+                 va_pac = adc_to_volts(g_pac_a);
+                 vb_pac = adc_to_volts(g_pac_b);
+                 vc_pac = adc_to_volts(g_pac_c);
 
  //--------------------------------------------------------------------------
 
@@ -602,33 +608,15 @@ void aplicarPWM(int16_t linha)
 //---------------- Conversão ADC → Volts ----------------
 static inline float adc_to_volts(uint16_t adc_code)
 {
-    /*
-    // Converte ADC → tensão no pino
-    float v_adc_pin = ((float)adc_code / ADC_RESOLUTION) * VREF_ADC;
 
-    // Converte para valor real, considerando mapeamento bipolar e divisor
-    float valor_volts = ((v_adc_pin / (VREF_ADC / 2.0f)) - 1.0f)*VMAX_SINAL;
+
+    // ----------- CONVERSÃO PARA VOLTS -----------
+    float v_adc_pin = (adc_code / ADC_RESOLUTION) * VREF_ADC;
+
+    // ----------- MAPEAMENTO BIPOLAR ----------
+    float valor_volts = ((v_adc_pin / (VREF_ADC * 0.5f)) - 1.0f) * VMAX_SINAL;
 
     return valor_volts;
-*/
-    // Corrige offset e aplica ganho em contagem ADC
-      int adc_offset = 191;
-      int adc_corr = adc_code - adc_offset;
-
-      if (adc_corr >= 2048) { // faixa positiva
-          float ganho_pos = 0.857f;
-          adc_corr = 2048 + (adc_corr - 2048) * ganho_pos;
-      } else { // faixa negativa
-          float ganho_neg = 0.88f;
-          adc_corr = 2048 + (adc_corr - 2048) * ganho_neg;
-      }
-
-      // Converte para volts depois
-      float v_adc_pin = ((float)adc_corr / ADC_RESOLUTION) * VREF_ADC;
-      float valor_volts = ((v_adc_pin / (VREF_ADC / 2.0f)) - 1.0f) * VMAX_SINAL;
-
-      return valor_volts;
-
 }
 
 //---------------- Conversão Volts → DAC ----------------
@@ -663,6 +651,7 @@ __interrupt void INT_myGPIO0_XINT_ISR(void)
 
 __interrupt void INT_myCPUTIMER0_ISR(void)
 {
+
 /*
 uint32_t contador_atual = CPUTimer_getTimerCount(CPUTIMER0_BASE);
 if (ultimo_contador != 0)
@@ -724,18 +713,20 @@ __interrupt void INT_ADC_C_1_ISR(void)
     // ADCA
     g_i1_a = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC0);
     g_i1_b = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC1);
-    g_i1_c = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC2);
-    g_vcc = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC3);
 
-    // ADCB
-    g_i2_a = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC4);
-    g_i2_b = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC5);
-    g_i2_c = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC6);
+    g_i2_a = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC2);
+    g_i2_b = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC3);
 
-    // ADCC
-    g_cap_a = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC7);
-    g_cap_b = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC8);
-    g_cap_c = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC9);
+    g_vcc = ADC_readResult(ADC_A_RESULT_BASE, ADC_A_SOC4);
+
+    g_pac_a = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC5);
+    g_pac_b = ADC_readResult(ADC_B_RESULT_BASE, ADC_B_SOC6);
+    g_pac_c = ADC_readResult(ADC_C_RESULT_BASE, ADC_B_SOC7);
+
+    g_cap_a = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC8);
+    g_cap_b = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC9);
+    g_cap_c = ADC_readResult(ADC_C_RESULT_BASE, ADC_C_SOC10);
+
 
     adc_flag = true;
 
